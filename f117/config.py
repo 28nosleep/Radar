@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     openai_reasoning_effort: Literal["none", "low", "medium", "high"] = "low"
     openai_max_concurrency: int = Field(default=3, ge=1, le=10)
     openai_max_output_tokens: int = Field(default=500, ge=100, le=2000)
+    editorial_max_attempts: int = Field(default=3, ge=1, le=10)
+    editorial_retry_base_seconds: int = Field(default=60, ge=1, le=3600)
+    editorial_retry_max_seconds: int = Field(default=3600, ge=1, le=86400)
 
     telegram_enabled: bool = False
     telegram_bot_token: SecretStr | None = None
@@ -78,6 +81,7 @@ class Settings(BaseSettings):
     telegram_format: Literal["editorial", "debug"] = "editorial"
     telegram_feedback_enabled: bool = True
     telegram_feedback_poll_seconds: int = Field(default=10, ge=2, le=60)
+    telegram_pace_seconds: float = Field(default=0.25, ge=0.0, le=5.0)
 
     dry_run: bool = True
     log_level: str = "INFO"

@@ -95,6 +95,13 @@ class OpenAIEditorialEnricher:
             )
             enrichment = response.output_parsed
             if enrichment is None:
+                status = getattr(response, "status", None)
+                incomplete_details = getattr(response, "incomplete_details", None)
+                refusal = _response_refusal(response)
+                if refusal:
+                    raise RuntimeError(f"OpenAI refused editorial enrichment: {refusal}")
+                if status == "incomplete" or incomplete_details is not None:
+                    raise RuntimeError("OpenAI returned incomplete editorial enrichment")
                 raise RuntimeError("OpenAI returned no parsed editorial enrichment")
             usage = response.usage
             usage_payload = (
@@ -163,3 +170,17 @@ def _fallback_why_important(material: RankedMaterial) -> str:
     if material.popularity:
         return "Материал уже заметно обсуждают, поэтому он может быстро стать важной темой."
     return "Материал отобран по свежести, репутации источника и соответствию темам Radar."
+
+
+def _response_refusal(response: object) -> str | None:
+    """Extract a best-effort Responses API refusal without depending on SDK internals."""
+
+    output = getattr(response, "output", None)
+    if not isinstance(output, list):
+        return None
+    for item in output:
+        for content in getattr(item, "content", []) or []:
+            refusal = getattr(content, "refusal", None)
+            if isinstance(refusal, str) and refusal.strip():
+                return _truncate(refusal, 200)
+    return None

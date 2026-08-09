@@ -60,6 +60,8 @@ class MaterialModel(Base):
         Index("ix_materials_published_at", "published_at"),
         Index("ix_materials_collected_at", "collected_at"),
         Index("ix_materials_duplicate_of", "duplicate_of_id"),
+        Index("ix_materials_editorial_retry_at", "editorial_retry_at"),
+        Index("ix_materials_last_signal_at", "last_signal_at"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
@@ -90,8 +92,16 @@ class MaterialModel(Base):
     llm_enrichment: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     llm_model: Mapped[str | None] = mapped_column(String(120))
     llm_usage: Mapped[dict[str, int] | None] = mapped_column(JSON)
+    editorial_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    editorial_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    editorial_error: Mapped[str | None] = mapped_column(Text)
+    editorial_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivery_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivery_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivery_error: Mapped[str | None] = mapped_column(Text)
     selected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_signal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

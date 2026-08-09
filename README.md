@@ -28,8 +28,9 @@ Every milestone ends with a runnable system, tests, a migration, and documentati
 ## M5 architecture
 
 This is a modular monolith with one scheduler process. Queues, Redis, Celery/ARQ,
-FastAPI, and separate services are unnecessary. Runs do not overlap; sources within a
-single run are fetched asynchronously with a configurable limit.
+FastAPI, and separate services are unnecessary. A PostgreSQL advisory lock gives the
+complete run a single owner, including manual `run-once` invocations; sources within a
+single owned run are fetched asynchronously with a configurable limit.
 
 The main data contract is:
 
@@ -41,11 +42,13 @@ The main data contract is:
 - `services/` — one application workflow;
 - `cli/` — one-off runs, scheduler, configuration checks, and status.
 
-OpenAI receives only the already-ranked TOP-N (`10` by default). Its result is stored
-before Telegram delivery. Enriched but undelivered cards form a separate FIFO retry
-queue and are always handled before new materials; no GPT request is spent again. If
-OpenAI fails, real delivery of that card is postponed to the next run, while dry-run
-prints a local fallback.
+OpenAI receives only the already-ranked TOP-N (`10` by default). Each successful result
+is stored immediately before the next material is requested. Provider failures use a
+bounded per-material retry state; malformed Telegram cards are quarantined rather than
+blocking other cards. Enriched but undelivered cards form a separate FIFO retry queue
+and are always handled before new materials; no GPT request is spent again. Telegram
+records a durable pre-send claim, favouring no automatic duplicate if the process loses
+the receipt after Telegram accepted it.
 
 ## Quick start
 
@@ -60,8 +63,9 @@ docker compose run --rm app radar validate-config
 docker compose run --rm app radar run-once
 ```
 
-Safe `dry-run` is enabled by default: OpenAI and Telegram are not called, the prepared
-digest is printed to stdout, and materials are not marked as delivered.
+Safe `dry-run` is enabled by default: collectors, OpenAI, Telegram delivery, and Telegram
+feedback polling are not called. The eligible locally stored digest is printed to stdout,
+and materials are not marked as delivered.
 
 For real personal delivery, `.env` needs:
 

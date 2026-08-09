@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -34,6 +35,10 @@ class _MemoryRepository:
         self.saved_enrichments = 0
         self.source_results: list[dict[str, object]] = []
         self.selected_ids: list[UUID] = []
+
+    @asynccontextmanager
+    async def run_lock(self):  # type: ignore[no-untyped-def]
+        yield True
 
     async def create_digest_run(self, *, dry_run: bool) -> UUID:
         run_id = uuid4()
@@ -165,6 +170,15 @@ class _MemoryRepository:
         del run_id
         self.recorded_deliveries.extend(receipts)
 
+    async def begin_delivery(self, _: UUID) -> bool:
+        return True
+
+    async def release_delivery_for_retry(self, *_: object, **__: object) -> None:
+        return None
+
+    async def record_editorial_failure(self, *_: object, **__: object) -> None:
+        return None
+
     async def finish_digest_run(self, run_id: UUID, **values: object) -> None:
         self.runs[run_id].update(values)
 
@@ -214,10 +228,14 @@ class _Notifier:
         self,
         cards: Sequence[EditorialCard],
         *,
+        on_delivering=None,  # type: ignore[no-untyped-def]
         on_delivered: DeliveryCallback | None = None,
     ) -> list[DeliveryReceipt]:
         self.calls.append(list(cards))
         receipts = [DeliveryReceipt(card.material.material_id, "42") for card in cards]
+        if on_delivering is not None:
+            for card in cards:
+                await on_delivering(card.material.material_id)
         if on_delivered is not None:
             for receipt in receipts:
                 await on_delivered(receipt)
@@ -281,7 +299,7 @@ def _item(
 async def test_vertical_slice_deduplicates_selects_top_n_and_reuses_llm_cache(
     tmp_path: Path,
 ) -> None:
-    settings = _settings(tmp_path)
+    settings = _settings(tmp_path, dry_run=False)
     repository = _MemoryRepository()
     collector = _Collector(
         {
@@ -330,12 +348,12 @@ async def test_vertical_slice_deduplicates_selects_top_n_and_reuses_llm_cache(
     assert first.duplicate_count == 1
     assert first.candidate_count == 2
     assert first.selected_count == 1
-    assert first.delivered_count == 0
+    assert first.delivered_count == 1
     assert second.inserted_count == 0
     assert len(enricher.calls) == 1
     assert len(enricher.calls[0]) == 1
     assert repository.saved_enrichments == 1
-    assert repository.recorded_deliveries == []
+    assert len(repository.recorded_deliveries) == 2
     assert len(notifier.calls) == 2
     canonical = next(
         material for material in repository.materials if material.duplicate_of_id is None
@@ -370,7 +388,7 @@ async def test_pipeline_accepts_hacker_news_and_arxiv_sources_without_network(
         ),
         encoding="utf-8",
     )
-    settings = Settings(_env_file=None, rss_catalog_path=catalog, digest_top_n=2, dry_run=True)
+    settings = Settings(_env_file=None, rss_catalog_path=catalog, digest_top_n=2, dry_run=False)
     repository = _MemoryRepository()
     service = DigestService(
         settings=settings,
@@ -461,7 +479,7 @@ async def test_etag_checkpoint_is_not_advanced_when_ingest_fails(tmp_path: Path)
             del source_id, item, duplicate_of_id
             raise RuntimeError("database write failed")
 
-    settings = _settings(tmp_path)
+    settings = _settings(tmp_path, dry_run=False)
     repository = FailingRepository()
     collector = _Collector(
         {
@@ -524,7 +542,7 @@ async def test_reddit_failure_does_not_block_other_sources(tmp_path: Path) -> No
 
     repository = _MemoryRepository()
     service = DigestService(
-        settings=Settings(_env_file=None, rss_catalog_path=catalog, digest_top_n=1, dry_run=True),
+        settings=Settings(_env_file=None, rss_catalog_path=catalog, digest_top_n=1, dry_run=False),
         repository=repository,  # type: ignore[arg-type]
         collector=RedditFailingCollector(
             {"rss": [_item("rss", "1", "AI update", "https://example.com/ai", reputation=0.8)]}

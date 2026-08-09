@@ -5,12 +5,18 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from f117.adapters.collectors import SourceCollector
-from f117.adapters.openai_editorial import EditorialEnricher
+from f117.adapters.openai_editorial import DeterministicEditorialEnricher, EditorialEnricher
 from f117.adapters.rss import FeedFetchResult
-from f117.adapters.telegram import DeliveryReceipt, DigestNotifier
+from f117.adapters.telegram import (
+    DeliveryReceipt,
+    DigestNotifier,
+    TelegramError,
+    render_card,
+    render_digest,
+)
 from f117.config import Settings
 from f117.domain import EditorialCard, RankedMaterial, StoredMaterial
 from f117.pipeline.classifier import classify_item
@@ -93,6 +99,23 @@ class DigestService:
         )
 
     async def run_once(self) -> RunSummary:
+        async with self.repository.run_lock() as acquired:
+            if not acquired:
+                logger.info("Skipped digest run because another Radar owner holds the lock")
+                return RunSummary(
+                    run_id=uuid4(),
+                    status="skipped_already_running",
+                    collected_count=0,
+                    inserted_count=0,
+                    duplicate_count=0,
+                    candidate_count=0,
+                    selected_count=0,
+                    delivered_count=0,
+                    editorial_failure_count=0,
+                )
+            return await self._run_once_owned()
+
+    async def _run_once_owned(self) -> RunSummary:
         run_id = await self.repository.create_digest_run(dry_run=self.settings.dry_run)
         counts = {
             "collected_count": 0,
@@ -106,11 +129,18 @@ class DigestService:
         failures: list[SourceFailure] = []
 
         try:
-            source_states = await self.repository.sync_sources(self.settings.load_feed_sources())
-            source_results = await asyncio.gather(
-                *(self._fetch_source(state) for state in source_states)
-            )
-            recent = await self.repository.recent_materials(days=self.settings.dedup_lookback_days)
+            source_results: Sequence[_SourceResult] = ()
+            recent: list[StoredMaterial] = []
+            if not self.settings.dry_run:
+                source_states = await self.repository.sync_sources(
+                    self.settings.load_feed_sources()
+                )
+                source_results = await asyncio.gather(
+                    *(self._fetch_source(state) for state in source_states)
+                )
+                recent = await self.repository.recent_materials(
+                    days=self.settings.dedup_lookback_days
+                )
 
             for source_result in source_results:
                 if source_result.failure is not None:
@@ -219,15 +249,21 @@ class DigestService:
             counts["selected_count"] = len(selected)
             await self.repository.record_selection([material.material_id for material in selected])
 
-            cards = await self._editorial_cards(selected, candidates)
-            counts["editorial_failure_count"] = sum(
-                card.editorial_error is not None for card in cards
-            )
+            cards, editorial_failures = await self._editorial_cards(selected, candidates)
+            cards, render_failures = await self._renderable_cards(cards)
+            counts["editorial_failure_count"] = editorial_failures + render_failures
             if cards and self.settings.dry_run:
-                await self.notifier.send(cards)
+                # Keep dry-runs entirely local: no collector, OpenAI, Telegram
+                # notifier, or feedback poller is touched.
+                print(render_digest(cards))
             elif cards:
-                cards = [card for card in cards if card.editorial_error is None]
                 recorded_ids: set[UUID] = set()
+
+                async def mark_delivery_started(material_id: UUID) -> None:
+                    if not await self.repository.begin_delivery(material_id):
+                        raise RuntimeError(
+                            f"Material {material_id} is no longer available for delivery"
+                        )
 
                 async def record_delivery(receipt: DeliveryReceipt) -> None:
                     await self.repository.record_deliveries(
@@ -237,9 +273,22 @@ class DigestService:
                     recorded_ids.add(receipt.material_id)
                     counts["delivered_count"] += 1
 
-                receipts = (
-                    await self.notifier.send(cards, on_delivered=record_delivery) if cards else []
-                )
+                try:
+                    receipts = await self.notifier.send(
+                        cards,
+                        on_delivering=mark_delivery_started,
+                        on_delivered=record_delivery,
+                    )
+                except TelegramError as exc:
+                    # Telegram's explicit 429 response means the card was not sent;
+                    # release only the currently claimed card for a bounded retry.
+                    if exc.material_id is not None and not exc.ambiguous:
+                        await self.repository.release_delivery_for_retry(
+                            exc.material_id,
+                            error=str(exc),
+                            retry_after_seconds=exc.retry_after_seconds or 60,
+                        )
+                    raise
                 for receipt in receipts:
                     if receipt.material_id not in recorded_ids:
                         await record_delivery(receipt)
@@ -321,7 +370,7 @@ class DigestService:
         self,
         selected: Sequence[RankedMaterial],
         candidates: Sequence[StoredMaterial],
-    ) -> list[EditorialCard]:
+    ) -> tuple[list[EditorialCard], int]:
         candidate_by_id = {candidate.id: candidate for candidate in candidates}
         card_by_id: dict[UUID, EditorialCard] = {}
         missing: list[RankedMaterial] = []
@@ -338,9 +387,29 @@ class DigestService:
                 usage=stored.llm_usage,
             )
 
-        enriched = await self.enricher.enrich(missing) if missing else []
-        for card in enriched:
-            card_by_id[card.material.material_id] = card
+        failures = 0
+        enricher = DeterministicEditorialEnricher() if self.settings.dry_run else self.enricher
+        for material in missing:
+            card = (await enricher.enrich([material]))[0]
+            stored = candidate_by_id[material.material_id]
+            if card.editorial_error is not None:
+                failures += 1
+                attempts_after_this_run = stored.editorial_attempts + 1
+                retry_delay = (
+                    None
+                    if attempts_after_this_run >= self.settings.editorial_max_attempts
+                    else min(
+                        self.settings.editorial_retry_base_seconds * 2**stored.editorial_attempts,
+                        self.settings.editorial_retry_max_seconds,
+                    )
+                )
+                await self.repository.record_editorial_failure(
+                    material.material_id,
+                    error=card.editorial_error,
+                    retry_delay_seconds=retry_delay,
+                )
+                continue
+            card_by_id[material.material_id] = card
             if card.llm_model is not None:
                 await self.repository.save_enrichment(
                     card.material.material_id,
@@ -349,7 +418,38 @@ class DigestService:
                     usage=card.usage,
                 )
 
-        return [card_by_id[material.material_id] for material in selected]
+        return (
+            [
+                card_by_id[material.material_id]
+                for material in selected
+                if material.material_id in card_by_id
+            ],
+            failures,
+        )
+
+    async def _renderable_cards(
+        self, cards: Sequence[EditorialCard]
+    ) -> tuple[list[EditorialCard], int]:
+        """Reject poison cards before Telegram sees the batch header or any card."""
+
+        valid: list[EditorialCard] = []
+        failures = 0
+        for card in cards:
+            try:
+                render_card(card, debug=self.settings.telegram_format == "debug")
+            except (TypeError, ValueError) as exc:
+                failures += 1
+                await self.repository.record_editorial_failure(
+                    card.material.material_id,
+                    error=f"Telegram render: {exc}",
+                    retry_delay_seconds=None,
+                )
+                logger.warning(
+                    "Quarantined unrenderable material %s: %s", card.material.material_id, exc
+                )
+            else:
+                valid.append(card)
+        return valid, failures
 
 
 def _select_for_delivery(

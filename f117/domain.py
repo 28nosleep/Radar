@@ -111,6 +111,7 @@ class StoredMaterial(BaseModel):
     llm_enrichment: EditorialEnrichment | None = None
     llm_model: str | None = None
     llm_usage: dict[str, int] = Field(default_factory=dict)
+    editorial_attempts: int = Field(default=0, ge=0)
 
 
 class MetricSnapshot(BaseModel):

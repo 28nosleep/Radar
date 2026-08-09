@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import exists, func, or_, select, text, update
 from sqlalchemy.orm import selectinload
 
 from f117.domain import (
@@ -40,8 +42,28 @@ class SourceState:
 
 
 class Repository:
+    _RUN_LOCK_KEY = 1_170_001
+
     def __init__(self, database: Database) -> None:
         self.database = database
+
+    @asynccontextmanager
+    async def run_lock(self) -> AsyncIterator[bool]:
+        """Hold one PostgreSQL session advisory lock for an entire Radar run."""
+
+        async with self.database.session() as session:
+            acquired = bool(
+                await session.scalar(
+                    text("SELECT pg_try_advisory_lock(:key)"), {"key": self._RUN_LOCK_KEY}
+                )
+            )
+            try:
+                yield acquired
+            finally:
+                if acquired:
+                    await session.execute(
+                        text("SELECT pg_advisory_unlock(:key)"), {"key": self._RUN_LOCK_KEY}
+                    )
 
     async def sync_sources(self, sources: list[FeedSource]) -> list[SourceState]:
         async with self.database.session() as session:
@@ -174,7 +196,10 @@ class Repository:
                     await session.execute(
                         update(MaterialModel)
                         .where(MaterialModel.id == duplicate_of_id)
-                        .values(independent_mentions=MaterialModel.independent_mentions + 1)
+                        .values(
+                            independent_mentions=MaterialModel.independent_mentions + 1,
+                            last_signal_at=datetime.now(UTC),
+                        )
                     )
                 await session.flush()
                 if item.popularity:
@@ -216,6 +241,7 @@ class Repository:
             )
             updated_metrics = _with_growth(metrics, previous, captured_at)
             row.popularity = updated_metrics
+            row.last_signal_at = captured_at
             session.add(
                 MetricSnapshotModel(
                     material_id=row.id, captured_at=captured_at, metrics=dict(metrics)
@@ -295,19 +321,39 @@ class Repository:
     async def digest_candidates(self, *, lookback_hours: int) -> list[StoredMaterial]:
         since = datetime.now(UTC) - timedelta(hours=lookback_hours)
         async with self.database.session() as session:
+            fresh_snapshot = exists(
+                select(MetricSnapshotModel.id).where(
+                    MetricSnapshotModel.material_id == MaterialModel.id,
+                    MetricSnapshotModel.captured_at >= since,
+                )
+            )
             query = (
                 select(MaterialModel)
                 .where(
-                    # Eligibility is based on first sighting, not publisher time:
-                    # feeds may surface important older posts after downtime.
                     or_(
                         MaterialModel.collected_at >= since,
-                        # Once paid enrichment exists, keep retrying delivery even
-                        # after the ordinary candidate window has elapsed.
+                        MaterialModel.last_signal_at >= since,
+                        fresh_snapshot,
+                        # A paid card remains eligible until delivery reaches a
+                        # terminal state. A card with a permanent render failure is
+                        # deliberately excluded below.
                         MaterialModel.llm_enrichment.is_not(None),
+                        # Failed editorial work is retried only at its persisted,
+                        # bounded retry time; old ordinary materials cannot backlog.
+                        MaterialModel.editorial_retry_at <= datetime.now(UTC),
                     ),
                     MaterialModel.duplicate_of_id.is_(None),
                     MaterialModel.delivered_at.is_(None),
+                    MaterialModel.delivery_started_at.is_(None),
+                    MaterialModel.editorial_failed_at.is_(None),
+                    or_(
+                        MaterialModel.editorial_retry_at.is_(None),
+                        MaterialModel.editorial_retry_at <= datetime.now(UTC),
+                    ),
+                    or_(
+                        MaterialModel.delivery_retry_at.is_(None),
+                        MaterialModel.delivery_retry_at <= datetime.now(UTC),
+                    ),
                 )
                 .options(selectinload(MaterialModel.source))
                 .order_by(MaterialModel.published_at.desc())
@@ -331,6 +377,70 @@ class Repository:
                     llm_enrichment=enrichment.model_dump(mode="json"),
                     llm_model=model,
                     llm_usage=usage,
+                    editorial_error=None,
+                    editorial_retry_at=None,
+                    editorial_failed_at=None,
+                )
+            )
+            await session.commit()
+
+    async def record_editorial_failure(
+        self,
+        material_id: UUID,
+        *,
+        error: str,
+        retry_delay_seconds: int | None,
+    ) -> None:
+        """Persist one failed editorial attempt, terminally once retries are exhausted."""
+
+        now = datetime.now(UTC)
+        async with self.database.session() as session:
+            row = await session.get(MaterialModel, material_id)
+            if row is None:
+                return
+            attempts = row.editorial_attempts + 1
+            row.editorial_attempts = attempts
+            row.editorial_error = error[:1000]
+            if retry_delay_seconds is None:
+                row.editorial_retry_at = None
+                row.editorial_failed_at = now
+            else:
+                row.editorial_retry_at = now + timedelta(seconds=retry_delay_seconds)
+            await session.commit()
+
+    async def begin_delivery(self, material_id: UUID) -> bool:
+        """Durably claim a card before Telegram receives it.
+
+        If the process dies after Telegram accepts the request but before the
+        receipt is stored, the claim remains and prevents an automatic duplicate.
+        """
+
+        now = datetime.now(UTC)
+        async with self.database.session() as session:
+            claimed_id = await session.scalar(
+                update(MaterialModel)
+                .where(
+                    MaterialModel.id == material_id,
+                    MaterialModel.delivered_at.is_(None),
+                    MaterialModel.delivery_started_at.is_(None),
+                )
+                .values(delivery_started_at=now, delivery_error=None)
+                .returning(MaterialModel.id)
+            )
+            await session.commit()
+            return claimed_id is not None
+
+    async def release_delivery_for_retry(
+        self, material_id: UUID, *, error: str, retry_after_seconds: int
+    ) -> None:
+        async with self.database.session() as session:
+            await session.execute(
+                update(MaterialModel)
+                .where(MaterialModel.id == material_id, MaterialModel.delivered_at.is_(None))
+                .values(
+                    delivery_started_at=None,
+                    delivery_retry_at=datetime.now(UTC) + timedelta(seconds=retry_after_seconds),
+                    delivery_error=error[:1000],
                 )
             )
             await session.commit()
@@ -396,7 +506,12 @@ class Repository:
                 await session.execute(
                     update(MaterialModel)
                     .where(MaterialModel.id == material_id)
-                    .values(delivered_at=sent_at)
+                    .values(
+                        delivered_at=sent_at,
+                        delivery_started_at=None,
+                        delivery_retry_at=None,
+                        delivery_error=None,
+                    )
                 )
             await session.commit()
 
@@ -554,6 +669,7 @@ class Repository:
             ),
             llm_model=row.llm_model,
             llm_usage=row.llm_usage or {},
+            editorial_attempts=row.editorial_attempts,
         )
 
 

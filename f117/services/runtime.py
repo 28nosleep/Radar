@@ -68,7 +68,7 @@ def validate_settings(settings: Settings) -> None:
 def build_digest_service(settings: Settings, repository: Repository) -> DigestService:
     deterministic = DeterministicEditorialEnricher()
     enricher: EditorialEnricher
-    if settings.openai_enabled:
+    if settings.openai_enabled and not settings.dry_run:
         api_key = _secret_value(settings.openai_api_key)
         if not api_key:
             raise ConfigurationError("F117_OPENAI_API_KEY is missing")
@@ -96,6 +96,7 @@ def build_digest_service(settings: Settings, repository: Repository) -> DigestSe
             api_base=settings.telegram_api_base,
             timeout_seconds=settings.http_timeout_seconds,
             debug=settings.telegram_format == "debug",
+            pace_seconds=settings.telegram_pace_seconds,
         )
 
     rss = RSSCollector(
@@ -143,7 +144,7 @@ def build_digest_service(settings: Settings, repository: Repository) -> DigestSe
 def build_feedback_poller(
     settings: Settings, repository: Repository
 ) -> TelegramFeedbackPoller | None:
-    if not settings.telegram_feedback_enabled or not settings.telegram_enabled:
+    if settings.dry_run or not settings.telegram_feedback_enabled or not settings.telegram_enabled:
         return None
     token = _secret_value(settings.telegram_bot_token)
     if not token or settings.telegram_chat_id is None:

@@ -164,8 +164,7 @@ async def test_telegram_adapter_sends_intro_and_one_message_per_card(
     assert reply_markup["inline_keyboard"][1][0]["text"] == "👍 Полезно"
     assert reply_markup["inline_keyboard"][1][2]["text"] == "⭐ В пост"
     assert (
-        str(cards[0].material.material_id)
-        in reply_markup["inline_keyboard"][1][0]["callback_data"]
+        str(cards[0].material.material_id) in reply_markup["inline_keyboard"][1][0]["callback_data"]
     )
 
 
