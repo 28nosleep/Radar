@@ -135,3 +135,31 @@ def test_popular_irrelevant_hacker_news_item_cannot_win_on_popularity_alone() ->
     relevant = score_material(_material(), now=NOW)
 
     assert relevant.score > irrelevant.score
+
+
+def test_irrelevant_growth_is_capped_alongside_popularity() -> None:
+    relevant = score_material(
+        _material(
+            item_updates={
+                "title": "arXiv: new method for reliable long-context language models",
+                "categories": [Category.RESEARCH],
+            }
+        ),
+        now=NOW,
+    )
+    for title in (
+        "reMarkable launches a general-purpose tablet accessory",
+        "Old Windows port becomes viral on Hacker News",
+    ):
+        irrelevant = score_material(
+            _material(
+                item_updates={
+                    "title": title,
+                    "source_name": "Hacker News",
+                    "categories": [Category.OTHER],
+                    "popularity": {"hn_points": 20_000, "hn_points_per_hour": 2_000},
+                }
+            ),
+            now=NOW,
+        )
+        assert relevant.score > irrelevant.score

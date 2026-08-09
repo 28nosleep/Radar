@@ -14,7 +14,17 @@ DEFAULT_TITLE_SIMILARITY_THRESHOLD = 0.92
 DEFAULT_FUZZY_TIME_WINDOW = timedelta(days=3)
 DEFAULT_EXACT_TIME_WINDOW = timedelta(days=7)
 _TOKEN_RE = re.compile(r"[\w]+", re.UNICODE)
-_NUMBER_RE = re.compile(r"(?<!\w)(?:v?\d+(?:\.\d+){0,3}|\d+(?:\.\d+)?%)(?!\w)", re.IGNORECASE)
+_NUMERIC_TOKEN_RE = re.compile(
+    r"(?<!\w)(?:"
+    r"(?P<money>\$\s*\d+(?:\.\d+)?\s*[kmb])"
+    r"|(?P<multiplier>\d+(?:\.\d+)?\s*x)"
+    r"|(?P<percent>\d+(?:\.\d+)?\s*%)"
+    r"|(?P<compact>\d+(?:\.\d+)?\s*[km])"
+    r"|(?P<model>(?:gpt|claude|gemini|llama|qwen)\s*-?\s*\d+(?:\.\d+)*)"
+    r"|(?P<version>v?\d+(?:\.\d+)+)"
+    r")(?!\w)",
+    re.IGNORECASE,
+)
 _NEGATIONS = frozenset({"not", "no", "without", "never", "не", "нет", "без"})
 _EVENT_MARKERS = frozenset(
     {
@@ -69,9 +79,7 @@ def _conflicting_claims(a: NormalizedItem, b: NormalizedItem) -> bool:
 
     a_title = normalize_title(a.title)
     b_title = normalize_title(b.title)
-    a_numbers = set(_NUMBER_RE.findall(a_title))
-    b_numbers = set(_NUMBER_RE.findall(b_title))
-    if a_numbers and b_numbers and a_numbers != b_numbers:
+    if _numeric_conflict(a.title, b.title):
         return True
     a_tokens = set(_tokens(a_title))
     b_tokens = set(_tokens(b_title))
@@ -82,6 +90,29 @@ def _conflicting_claims(a: NormalizedItem, b: NormalizedItem) -> bool:
     a_events = a_tokens & _EVENT_MARKERS
     b_events = b_tokens & _EVENT_MARKERS
     return bool(a_events and b_events and a_events != b_events)
+
+
+def _numeric_conflict(a_title: str, b_title: str) -> bool:
+    """Reject only different values for the same explicit numeric claim type.
+
+    An added context length is useful detail, not evidence of a distinct event.
+    Conversely, two different funding amounts, versions, percentages, compact
+    counts, or model numbers are conservative merge blockers.
+    """
+
+    def tokens(title: str) -> dict[str, set[str]]:
+        values: dict[str, set[str]] = {}
+        for match in _NUMERIC_TOKEN_RE.finditer(title.casefold()):
+            kind = match.lastgroup
+            if kind is None:
+                continue
+            value = re.sub(r"\s+", "", match.group(kind)).casefold()
+            values.setdefault(kind, set()).add(value)
+        return values
+
+    a_values = tokens(a_title)
+    b_values = tokens(b_title)
+    return any(a_values[kind] != b_values[kind] for kind in a_values.keys() & b_values.keys())
 
 
 def duplicate_reason(

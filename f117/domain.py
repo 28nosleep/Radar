@@ -112,6 +112,9 @@ class StoredMaterial(BaseModel):
     llm_model: str | None = None
     llm_usage: dict[str, int] = Field(default_factory=dict)
     editorial_attempts: int = Field(default=0, ge=0)
+    editorial_retry_at: datetime | None = None
+    delivery_started_at: datetime | None = None
+    delivery_ambiguous_at: datetime | None = None
 
 
 class MetricSnapshot(BaseModel):

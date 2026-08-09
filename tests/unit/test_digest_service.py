@@ -117,7 +117,7 @@ class _MemoryRepository:
         self.materials.append(stored)
         return stored
 
-    async def digest_candidates(self, *, lookback_hours: int) -> list[StoredMaterial]:
+    async def digest_candidates(self, *, lookback_hours: int, **_: object) -> list[StoredMaterial]:
         del lookback_hours
         return [
             material
@@ -183,10 +183,13 @@ class _MemoryRepository:
         del run_id
         self.recorded_deliveries.extend(receipts)
 
-    async def begin_delivery(self, _: UUID) -> bool:
+    async def begin_delivery(self, _: UUID, **__: object) -> bool:
         return True
 
     async def release_delivery_for_retry(self, *_: object, **__: object) -> None:
+        return None
+
+    async def mark_delivery_ambiguous(self, *_: object, **__: object) -> None:
         return None
 
     async def record_editorial_failure(self, *_: object, **__: object) -> None:
@@ -672,3 +675,70 @@ def test_cached_gpt_cards_are_fifo_delivery_queue_before_new_top_ranked_items() 
     selected = _select_for_delivery(ranked, candidates, top_n=2)
 
     assert [material.material_id for material in selected] == [old_cached_id, recent_cached_id]
+
+
+def test_other_viral_discovery_does_not_displace_profiled_ai_material() -> None:
+    now = datetime.now(UTC)
+
+    def candidate(material_id: UUID, category: Category) -> StoredMaterial:
+        title = (
+            "reMarkable general hardware story goes viral"
+            if category is Category.OTHER
+            else "arXiv paper on reliable AI reasoning"
+        )
+        return StoredMaterial(
+            id=material_id,
+            item=NormalizedItem(
+                external_id=str(material_id),
+                source_key="hacker-news",
+                source_name="Hacker News",
+                source_reputation=0.8,
+                title=title,
+                url=f"https://example.com/{material_id}",
+                canonical_url=f"https://example.com/{material_id}",
+                published_at=now,
+                collected_at=now,
+                description="Regression fixture",
+                source_categories=[category],
+                categories=[category],
+                popularity={},
+                content_hash=str(material_id),
+                normalized_title=title.casefold(),
+            ),
+        )
+
+    other_id, ai_id = uuid4(), uuid4()
+    candidates = [candidate(other_id, Category.OTHER), candidate(ai_id, Category.RESEARCH)]
+    ranked = [
+        RankedMaterial(
+            material_id=other_id,
+            title="reMarkable general hardware story goes viral",
+            url="https://example.com/other",
+            source_name="Hacker News",
+            published_at=now,
+            description="",
+            categories=[Category.OTHER],
+            popularity={},
+            independent_mentions=1,
+            score=65,
+            score_reasons=[],
+            discovery_score=100,
+        ),
+        RankedMaterial(
+            material_id=ai_id,
+            title="arXiv paper on reliable AI reasoning",
+            url="https://example.com/ai",
+            source_name="arXiv",
+            published_at=now,
+            description="",
+            categories=[Category.RESEARCH],
+            popularity={},
+            independent_mentions=1,
+            score=70,
+            score_reasons=[],
+        ),
+    ]
+
+    selected = _select_for_delivery(ranked, candidates, top_n=1, discovery_selection_boost=0.2)
+
+    assert [material.material_id for material in selected] == [ai_id]

@@ -169,3 +169,33 @@ def test_same_project_url_with_distinct_events_is_not_merged() -> None:
     )
 
     assert not is_probable_duplicate(first, second)
+
+
+@pytest.mark.parametrize(
+    ("first_title", "second_title"),
+    [
+        ("Company raises $100M for AI robotics", "Company raises $200M for AI robotics"),
+        ("Inference is now 10x faster for AI teams", "Inference is now 20x faster for AI teams"),
+        (
+            "Model adds 128k context window for developers",
+            "Model adds 256k context window for developers",
+        ),
+        ("Platform reaches 1M active AI users", "Platform reaches 2M active AI users"),
+    ],
+)
+def test_comparable_numeric_claims_block_merge(first_title: str, second_title: str) -> None:
+    first = _item(title=first_title)
+    second = _item(title=second_title, source_key="source-b", external_id="2")
+
+    assert not is_probable_duplicate(first, second)
+
+
+def test_extra_numeric_detail_does_not_block_same_event_merge() -> None:
+    first = _item(title="OpenAI launches GPT-5")
+    second = _item(
+        title="OpenAI launches GPT-5 with 1 million token context",
+        source_key="source-b",
+        external_id="2",
+    )
+
+    assert is_probable_duplicate(first, second)

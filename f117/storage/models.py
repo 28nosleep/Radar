@@ -78,6 +78,9 @@ class MaterialModel(Base):
     author: Mapped[str | None] = mapped_column(Text)
     categories: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     popularity: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False, default=dict)
+    # Raw provider observations are kept separate from the canonical aggregate.
+    # This prevents an earlier aggregate from becoming a sticky input on refresh.
+    raw_metrics: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False, default=dict)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     normalized_title: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -98,6 +101,7 @@ class MaterialModel(Base):
     editorial_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivery_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivery_ambiguous_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivery_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivery_error: Mapped[str | None] = mapped_column(Text)
     selected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -47,8 +47,9 @@ is stored immediately before the next material is requested. Provider failures u
 bounded per-material retry state; malformed Telegram cards are quarantined rather than
 blocking other cards. Enriched but undelivered cards form a separate FIFO retry queue
 and are always handled before new materials; no GPT request is spent again. Telegram
-records a durable pre-send claim, favouring no automatic duplicate if the process loses
-the receipt after Telegram accepted it.
+uses a lease-backed pre-send claim, so a crash before the HTTP request can recover. A
+possibly accepted Telegram request is held separately and is never resent automatically;
+the owner may explicitly release it with `radar retry-delivery <material-uuid>`.
 
 ## Quick start
 

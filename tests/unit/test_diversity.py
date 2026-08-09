@@ -61,3 +61,16 @@ def test_diversity_does_not_replace_a_clear_winner_with_weak_filler() -> None:
     result = diversify(materials, config=DiversityConfig(max_per_source=1, close_score_gap=8))
 
     assert result[:2] == materials[:2]
+
+
+def test_diversity_preserves_high_deferred_before_later_weaker_overflow() -> None:
+    materials = [
+        _material("A 82", source="A", score=82),
+        _material("A 78", source="A", score=78),
+        _material("B 76", source="B", score=76),
+        _material("A 70", source="A", score=70),
+    ]
+
+    result = diversify(materials, config=DiversityConfig(max_per_source=1))
+
+    assert [item.score for item in result[:3]] == [82, 76, 78]

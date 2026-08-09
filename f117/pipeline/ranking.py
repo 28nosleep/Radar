@@ -46,6 +46,7 @@ class RankingConfig:
     default_topic_fit: float = 0.75
     other_topic_fit: float = 0.08
     other_popularity_cap: float = 0.20
+    other_growth_cap: float = 0.20
 
     def __post_init__(self) -> None:
         weights = self.weights
@@ -63,6 +64,7 @@ class RankingConfig:
             "default_topic_fit",
             "other_topic_fit",
             "other_popularity_cap",
+            "other_growth_cap",
         ):
             value = getattr(self, name)
             if not 0.0 <= value <= 1.0:
@@ -211,6 +213,8 @@ def score_material(
             targets=_GROWTH_TARGETS,
         ),
     )
+    if _is_other_only(material.item.categories):
+        growth = min(growth, config.other_growth_cap)
     factors = {
         "freshness": _freshness_signal(
             material.item.published_at,

@@ -137,17 +137,38 @@ class GitHubCollector:
         owner: dict[str, Any] = dict(owner_value) if isinstance(owner_value, dict) else {}
         topics = [str(topic) for topic in repo.get("topics", []) if isinstance(topic, str)]
         release_name = str(release.get("name") or release.get("tag_name") or "") if release else ""
+        release_id = (
+            str(release.get("id") or release.get("node_id") or release.get("tag_name") or "")
+            if release
+            else ""
+        )
+        repo_url = str(repo.get("html_url"))
+        release_url = str(release.get("html_url") or "") if release else ""
+        if release_id and not release_url and release_name:
+            release_url = f"{repo_url.rstrip('/')}/releases/tag/{release_name}"
+        is_release_event = bool(release_id and release_url)
         description = str(repo.get("description") or "")
         if release_name:
             description = f"{description}\nПоследний релиз: {release_name}".strip()
         return CollectedItem(
-            external_id=str(repo_id),
+            # A release is a stable event of a repository, while ordinary repo
+            # refreshes continue to use the repo ID and remain mutable.
+            external_id=(f"{repo_id}:release:{release_id}" if is_release_event else str(repo_id)),
             source_key=source.key,
             source_name=source.name,
             source_reputation=source.reputation,
-            title=str(repo.get("full_name") or repo.get("name")),
-            url=str(repo.get("html_url")),
-            published_at=_parse_github_date(repo.get("updated_at") or repo.get("created_at")),
+            title=(
+                f"{repo.get('full_name') or repo.get('name')!s} — {release_name}"
+                if is_release_event and release_name
+                else str(repo.get("full_name") or repo.get("name"))
+            ),
+            url=release_url if is_release_event else repo_url,
+            published_at=_parse_github_date(
+                (release or {}).get("published_at")
+                or (release or {}).get("created_at")
+                or repo.get("updated_at")
+                or repo.get("created_at")
+            ),
             collected_at=collected_at,
             description=description,
             author=str(owner.get("login") or "").strip() or None,
@@ -157,7 +178,12 @@ class GitHubCollector:
                 "forks": float(repo.get("forks_count") or 0),
                 "releases": float(bool(release)),
             },
-            raw={"language": repo.get("language"), "topics": topics, "release": release_name},
+            raw={
+                "language": repo.get("language"),
+                "topics": topics,
+                "release": release_name,
+                "release_id": release_id or None,
+            },
         )
 
 

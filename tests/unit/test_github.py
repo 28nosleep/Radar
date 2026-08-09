@@ -34,7 +34,8 @@ def test_repository_normalization_includes_releases_and_metrics() -> None:
         {"tag_name": "v1.0"},
     )
 
-    assert item.external_id == "17"
+    assert item.external_id == "17:release:v1.0"
+    assert item.url.endswith("/releases/tag/v1.0")
     assert item.author == "lab"
     assert item.popularity["github_stars"] == 1200
     assert item.popularity["forks"] == 40

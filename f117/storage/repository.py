@@ -204,6 +204,7 @@ class Repository:
                     author=item.author,
                     categories=[category.value for category in item.categories],
                     popularity=item.popularity,
+                    raw_metrics=item.popularity,
                     content_hash=item.content_hash,
                     normalized_title=item.normalized_title,
                     duplicate_of_id=duplicate_of_id,
@@ -219,7 +220,7 @@ class Repository:
                         )
                     )
                 await session.flush()
-                if item.popularity and duplicate_of_id is None:
+                if item.popularity:
                     session.add(
                         MetricSnapshotModel(
                             material_id=row.id,
@@ -227,8 +228,9 @@ class Repository:
                             metrics=dict(item.popularity),
                         )
                     )
-                if duplicate_of_id is not None:
-                    await self._aggregate_root_metrics(session, duplicate_of_id, datetime.now(UTC))
+                    await self._aggregate_root_metrics(
+                        session, duplicate_of_id or row.id, datetime.now(UTC)
+                    )
                 stored = self._to_stored(row)
                 await session.commit()
                 return stored
@@ -285,6 +287,16 @@ class Repository:
                     setattr(row, key, value)
             if content_changed:
                 row.categories = [category.value for category in item.categories]
+                if row.delivered_at is None:
+                    # A cached editorial card describes the previous content. Do
+                    # not let its retry state carry over to a changed material.
+                    row.llm_enrichment = None
+                    row.llm_model = None
+                    row.llm_usage = None
+                    row.editorial_attempts = 0
+                    row.editorial_retry_at = None
+                    row.editorial_error = None
+                    row.editorial_failed_at = None
             await self._record_metrics(session, row, item.popularity, captured_at)
             await session.commit()
 
@@ -297,28 +309,12 @@ class Repository:
     ) -> None:
         if not metrics:
             return
-        root_id = row.duplicate_of_id or row.id
-        if root_id == row.id:
-            previous = await session.scalar(
-                select(MetricSnapshotModel)
-                .where(MetricSnapshotModel.material_id == row.id)
-                .order_by(MetricSnapshotModel.captured_at.desc())
-                .limit(1)
-            )
-            row.popularity = _with_growth(metrics, previous, captured_at)
-            row.last_signal_at = captured_at
-            session.add(
-                MetricSnapshotModel(
-                    material_id=row.id, captured_at=captured_at, metrics=dict(metrics)
-                )
-            )
-            return
-        row.popularity = dict(metrics)
+        row.raw_metrics = dict(metrics)
         row.last_signal_at = captured_at
         session.add(
             MetricSnapshotModel(material_id=row.id, captured_at=captured_at, metrics=dict(metrics))
         )
-        await self._aggregate_root_metrics(session, root_id, captured_at)
+        await self._aggregate_root_metrics(session, row.duplicate_of_id or row.id, captured_at)
 
     async def _aggregate_root_metrics(
         self, session: Any, root_id: UUID, captured_at: datetime
@@ -333,7 +329,7 @@ class Repository:
                 )
             )
         ).all()
-        aggregate = _aggregate_metrics([row.popularity for row in rows])
+        aggregate = _aggregate_metrics([row.raw_metrics for row in rows])
         previous = await session.scalar(
             select(MetricSnapshotModel)
             .where(MetricSnapshotModel.material_id == root_id)
@@ -415,8 +411,12 @@ class Repository:
             )
             await session.commit()
 
-    async def digest_candidates(self, *, lookback_hours: int) -> list[StoredMaterial]:
-        since = datetime.now(UTC) - timedelta(hours=lookback_hours)
+    async def digest_candidates(
+        self, *, lookback_hours: int, delivery_claim_lease_seconds: int = 300
+    ) -> list[StoredMaterial]:
+        now = datetime.now(UTC)
+        since = now - timedelta(hours=lookback_hours)
+        stale_claim_before = now - timedelta(seconds=delivery_claim_lease_seconds)
         async with self.database.session() as session:
             fresh_snapshot = exists(
                 select(MetricSnapshotModel.id).where(
@@ -437,19 +437,25 @@ class Repository:
                         MaterialModel.llm_enrichment.is_not(None),
                         # Failed editorial work is retried only at its persisted,
                         # bounded retry time; old ordinary materials cannot backlog.
-                        MaterialModel.editorial_retry_at <= datetime.now(UTC),
+                        MaterialModel.editorial_retry_at <= now,
                     ),
                     MaterialModel.duplicate_of_id.is_(None),
                     MaterialModel.delivered_at.is_(None),
-                    MaterialModel.delivery_started_at.is_(None),
+                    # A claim is only a lease before a Telegram outcome is known.
+                    # Ambiguous outcomes are deliberately held for manual recovery.
+                    or_(
+                        MaterialModel.delivery_started_at.is_(None),
+                        MaterialModel.delivery_started_at <= stale_claim_before,
+                    ),
+                    MaterialModel.delivery_ambiguous_at.is_(None),
                     MaterialModel.editorial_failed_at.is_(None),
                     or_(
                         MaterialModel.editorial_retry_at.is_(None),
-                        MaterialModel.editorial_retry_at <= datetime.now(UTC),
+                        MaterialModel.editorial_retry_at <= now,
                     ),
                     or_(
                         MaterialModel.delivery_retry_at.is_(None),
-                        MaterialModel.delivery_retry_at <= datetime.now(UTC),
+                        MaterialModel.delivery_retry_at <= now,
                     ),
                 )
                 .options(selectinload(MaterialModel.source))
@@ -505,27 +511,70 @@ class Repository:
                 row.editorial_retry_at = now + timedelta(seconds=retry_delay_seconds)
             await session.commit()
 
-    async def begin_delivery(self, material_id: UUID) -> bool:
+    async def begin_delivery(self, material_id: UUID, *, lease_seconds: int = 300) -> bool:
         """Durably claim a card before Telegram receives it.
 
-        If the process dies after Telegram accepts the request but before the
-        receipt is stored, the claim remains and prevents an automatic duplicate.
+        A stale pre-request claim can be taken over after its lease. A separately
+        recorded ambiguous Telegram outcome is never reclaimed automatically.
         """
 
         now = datetime.now(UTC)
+        stale_claim_before = now - timedelta(seconds=lease_seconds)
         async with self.database.session() as session:
             claimed_id = await session.scalar(
                 update(MaterialModel)
                 .where(
                     MaterialModel.id == material_id,
                     MaterialModel.delivered_at.is_(None),
-                    MaterialModel.delivery_started_at.is_(None),
+                    MaterialModel.delivery_ambiguous_at.is_(None),
+                    or_(
+                        MaterialModel.delivery_started_at.is_(None),
+                        MaterialModel.delivery_started_at <= stale_claim_before,
+                    ),
                 )
                 .values(delivery_started_at=now, delivery_error=None)
                 .returning(MaterialModel.id)
             )
             await session.commit()
             return claimed_id is not None
+
+    async def mark_delivery_ambiguous(self, material_id: UUID, *, error: str) -> None:
+        """Hold a possibly-sent card until the owner explicitly recovers it."""
+
+        now = datetime.now(UTC)
+        async with self.database.session() as session:
+            await session.execute(
+                update(MaterialModel)
+                .where(MaterialModel.id == material_id, MaterialModel.delivered_at.is_(None))
+                .values(
+                    delivery_ambiguous_at=now,
+                    delivery_error=error[:1000],
+                    delivery_retry_at=None,
+                )
+            )
+            await session.commit()
+
+    async def recover_ambiguous_delivery(self, material_id: UUID) -> bool:
+        """Explicit owner action to make a held ambiguous card eligible again."""
+
+        async with self.database.session() as session:
+            recovered_id = await session.scalar(
+                update(MaterialModel)
+                .where(
+                    MaterialModel.id == material_id,
+                    MaterialModel.delivered_at.is_(None),
+                    MaterialModel.delivery_ambiguous_at.is_not(None),
+                )
+                .values(
+                    delivery_started_at=None,
+                    delivery_ambiguous_at=None,
+                    delivery_retry_at=None,
+                    delivery_error="manual recovery requested",
+                )
+                .returning(MaterialModel.id)
+            )
+            await session.commit()
+            return recovered_id is not None
 
     async def release_delivery_for_retry(
         self, material_id: UUID, *, error: str, retry_after_seconds: int
@@ -536,6 +585,7 @@ class Repository:
                 .where(MaterialModel.id == material_id, MaterialModel.delivered_at.is_(None))
                 .values(
                     delivery_started_at=None,
+                    delivery_ambiguous_at=None,
                     delivery_retry_at=datetime.now(UTC) + timedelta(seconds=retry_after_seconds),
                     delivery_error=error[:1000],
                 )
@@ -606,6 +656,7 @@ class Repository:
                     .values(
                         delivered_at=sent_at,
                         delivery_started_at=None,
+                        delivery_ambiguous_at=None,
                         delivery_retry_at=None,
                         delivery_error=None,
                     )
@@ -767,6 +818,9 @@ class Repository:
             llm_model=row.llm_model,
             llm_usage=row.llm_usage or {},
             editorial_attempts=row.editorial_attempts,
+            editorial_retry_at=row.editorial_retry_at,
+            delivery_started_at=row.delivery_started_at,
+            delivery_ambiguous_at=row.delivery_ambiguous_at,
         )
 
 

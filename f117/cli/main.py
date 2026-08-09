@@ -8,6 +8,7 @@ import signal
 from dataclasses import asdict
 from time import monotonic
 from typing import NoReturn
+from uuid import UUID
 
 from f117 import __version__
 from f117.adapters.telegram import TelegramFeedbackPoller
@@ -43,6 +44,10 @@ def build_parser() -> argparse.ArgumentParser:
     discovery = subparsers.add_parser("discovery-report", help="show discovery score calibration")
     discovery.add_argument("--days", type=_positive_days, default=7)
     subparsers.add_parser("poll-feedback", help="process pending Telegram inline-button feedback")
+    recover_delivery = subparsers.add_parser(
+        "retry-delivery", help="explicitly release one ambiguous Telegram delivery for retry"
+    )
+    recover_delivery.add_argument("material_id", type=UUID)
     return parser
 
 
@@ -84,6 +89,8 @@ def main() -> None:
         asyncio.run(_show_discovery_report(settings, days=args.days))
     elif args.command == "poll-feedback":
         asyncio.run(_poll_feedback_once(settings))
+    elif args.command == "retry-delivery":
+        asyncio.run(_recover_delivery(settings, material_id=args.material_id))
 
 
 async def _run_once(settings: Settings) -> None:
@@ -137,6 +144,15 @@ async def _poll_feedback_once(settings: Settings) -> None:
             print(json.dumps({"processed": 0, "reason": "Telegram feedback is disabled"}))
             return
         print(json.dumps({"processed": await poller.poll_once()}))
+    finally:
+        await database.dispose()
+
+
+async def _recover_delivery(settings: Settings, *, material_id: UUID) -> None:
+    database = Database(settings.database_url)
+    try:
+        recovered = await Repository(database).recover_ambiguous_delivery(material_id)
+        print(json.dumps({"recovered": recovered, "material_id": str(material_id)}))
     finally:
         await database.dispose()
 

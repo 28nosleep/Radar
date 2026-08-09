@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     editorial_max_attempts: int = Field(default=3, ge=1, le=10)
     editorial_retry_base_seconds: int = Field(default=60, ge=1, le=3600)
     editorial_retry_max_seconds: int = Field(default=3600, ge=1, le=86400)
+    editorial_retry_slots: int = Field(default=2, ge=0, le=20)
 
     telegram_enabled: bool = False
     telegram_bot_token: SecretStr | None = None
@@ -82,6 +83,7 @@ class Settings(BaseSettings):
     telegram_feedback_enabled: bool = True
     telegram_feedback_poll_seconds: int = Field(default=10, ge=2, le=60)
     telegram_pace_seconds: float = Field(default=0.25, ge=0.0, le=5.0)
+    delivery_claim_lease_seconds: int = Field(default=300, ge=30, le=86400)
 
     dry_run: bool = True
     log_level: str = "INFO"

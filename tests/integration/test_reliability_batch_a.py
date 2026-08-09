@@ -21,7 +21,7 @@ import pytest
 import pytest_asyncio
 
 from f117.adapters.rss import FeedFetchResult
-from f117.adapters.telegram import DeliveryCallback, DeliveryReceipt
+from f117.adapters.telegram import DeliveryCallback, DeliveryReceipt, TelegramError
 from f117.config import Settings
 from f117.domain import (
     Category,
@@ -347,6 +347,50 @@ async def test_telegram_success_then_database_failure_does_not_resend(
             notifier,
         ).run_once()
     assert notifier.sent == [material_id]
+
+    retry_notifier = _Notifier()
+    await _service(
+        _settings(tmp_path, top_n=1), repository, _Collector(), _Enricher(), retry_notifier
+    ).run_once()
+    assert retry_notifier.sent == []
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_telegram_success_is_held_without_automatic_resend(
+    repository: Repository, tmp_path: Path
+) -> None:
+    material_id = (await _seed(repository, _item("ambiguous")))[0]
+
+    class _AmbiguousNotifier(_Notifier):
+        async def send(
+            self,
+            cards: Sequence[EditorialCard],
+            *,
+            on_delivering: Any = None,
+            on_delivered: DeliveryCallback | None = None,
+        ) -> list[DeliveryReceipt]:
+            del on_delivered
+            card = cards[0]
+            if on_delivering is not None:
+                await on_delivering(card.material.material_id)
+            self.sent.append(card.material.material_id)
+            raise TelegramError(
+                "timeout after Telegram accepted the request",
+                ambiguous=True,
+                material_id=card.material.material_id,
+            )
+
+    with pytest.raises(TelegramError, match="timeout"):
+        await _service(
+            _settings(tmp_path, top_n=1),
+            repository,
+            _Collector(),
+            _Enricher(),
+            _AmbiguousNotifier(),
+        ).run_once()
+    async with repository.database.session() as session:
+        row = await session.get(MaterialModel, material_id)
+    assert row is not None and row.delivery_ambiguous_at is not None
 
     retry_notifier = _Notifier()
     await _service(

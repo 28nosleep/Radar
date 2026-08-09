@@ -18,7 +18,7 @@ from f117.adapters.telegram import (
     render_digest,
 )
 from f117.config import Settings
-from f117.domain import EditorialCard, RankedMaterial, StoredMaterial
+from f117.domain import Category, EditorialCard, RankedMaterial, StoredMaterial
 from f117.pipeline.classifier import classify_item
 from f117.pipeline.deduplicator import duplicate_reason, find_duplicate
 from f117.pipeline.discovery import DiscoveryConfig, assess_discovery
@@ -256,6 +256,7 @@ class DigestService:
                 candidates,
                 top_n=self.settings.digest_top_n,
                 discovery_selection_boost=self.settings.discovery_selection_boost,
+                editorial_retry_slots=self.settings.editorial_retry_slots,
                 diversity_config=DiversityConfig(
                     max_per_source=self.settings.diversity_max_per_source,
                     max_per_entity=self.settings.diversity_max_per_entity,
@@ -278,7 +279,10 @@ class DigestService:
                 recorded_ids: set[UUID] = set()
 
                 async def mark_delivery_started(material_id: UUID) -> None:
-                    if not await self.repository.begin_delivery(material_id):
+                    if not await self.repository.begin_delivery(
+                        material_id,
+                        lease_seconds=self.settings.delivery_claim_lease_seconds,
+                    ):
                         raise RuntimeError(
                             f"Material {material_id} is no longer available for delivery"
                         )
@@ -305,6 +309,10 @@ class DigestService:
                             exc.material_id,
                             error=str(exc),
                             retry_after_seconds=exc.retry_after_seconds or 60,
+                        )
+                    elif exc.material_id is not None:
+                        await self.repository.mark_delivery_ambiguous(
+                            exc.material_id, error=str(exc)
                         )
                     raise
                 for receipt in receipts:
@@ -476,6 +484,7 @@ def _select_for_delivery(
     *,
     top_n: int,
     discovery_selection_boost: float = 0.0,
+    editorial_retry_slots: int = 2,
     diversity_config: DiversityConfig | None = None,
 ) -> list[RankedMaterial]:
     """Reserve the delivery queue before choosing fresh editorial candidates.
@@ -498,14 +507,35 @@ def _select_for_delivery(
         ),
     )
     available_slots = max(0, top_n - len(retry_queue))
+    now = datetime.now(UTC)
+    editorial_retries = sorted(
+        (
+            material
+            for material in ranked
+            if candidate_by_id[material.material_id].llm_enrichment is None
+            and _is_due_editorial_retry(candidate_by_id[material.material_id], now)
+        ),
+        key=lambda material: (
+            _editorial_retry_at(candidate_by_id[material.material_id]),
+            candidate_by_id[material.material_id].item.collected_at,
+            material.material_id,
+        ),
+    )
+    reserved_retries = editorial_retries[: min(editorial_retry_slots, available_slots)]
+    available_slots -= len(reserved_retries)
     fresh = sorted(
         (
             material
             for material in ranked
             if candidate_by_id[material.material_id].llm_enrichment is None
+            and material not in editorial_retries
         ),
         key=lambda material: (
-            material.score + material.discovery_score * discovery_selection_boost,
+            _selection_score(
+                material,
+                candidate_by_id[material.material_id],
+                discovery_selection_boost,
+            ),
             material.score,
             material.published_at,
         ),
@@ -513,4 +543,26 @@ def _select_for_delivery(
     )
     if diversity_config is not None:
         fresh = diversify(fresh, config=diversity_config)
-    return retry_queue[:top_n] + fresh[:available_slots]
+    return retry_queue[:top_n] + reserved_retries + fresh[:available_slots]
+
+
+def _selection_score(
+    material: RankedMaterial, candidate: StoredMaterial, discovery_selection_boost: float
+) -> float:
+    """Keep viral unrelated material from buying a TOP position via discovery alone."""
+
+    boost = discovery_selection_boost
+    if not candidate.item.categories or set(candidate.item.categories) == {Category.OTHER}:
+        boost *= 0.20
+    return material.score + material.discovery_score * boost
+
+
+def _is_due_editorial_retry(material: StoredMaterial, now: datetime) -> bool:
+    retry_at = material.editorial_retry_at
+    return retry_at is not None and retry_at <= now
+
+
+def _editorial_retry_at(material: StoredMaterial) -> datetime:
+    retry_at = material.editorial_retry_at
+    assert retry_at is not None
+    return retry_at
