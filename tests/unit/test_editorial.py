@@ -283,7 +283,7 @@ def test_reddit_rss_event_can_pass_without_api_metrics() -> None:
 
 def test_reddit_rss_multi_feed_presence_is_qualitative_not_fake_engagement() -> None:
     _, _, result = _assess(
-        "AI model release is bizarre",
+        "Project releases a bizarre AI model",
         source_key="reddit-singularity",
         categories=[Category.AI],
         qualitative_signals=["reddit_rss", "reddit_seen_new", "reddit_seen_hot"],
@@ -294,32 +294,125 @@ def test_reddit_rss_multi_feed_presence_is_qualitative_not_fake_engagement() -> 
 
 
 @pytest.mark.parametrize(
-    ("title", "expected_reason"),
+    ("title", "description", "categories"),
     [
         (
-            "BeingBeyond collects humanoid-training data with robotic hands",
-            "no standalone news",
+            "Open Model: Google Weather Next 2",
+            "A paper published in Nature shows unprecedented cyclone forecast accuracy.",
+            [Category.AI, Category.LLM, Category.OPEN_SOURCE],
         ),
         (
-            "OpenAI’s Model Codenamed Doug will reportedly make Fable look primitive",
-            "unsupported speculation",
+            "Open-weight video gen that actually delivers: MiniMax H3 on local hardware",
+            "H3 weights went live on HuggingFace August 3rd. Has anyone tried it?",
+            [Category.AI, Category.LLM, Category.OPEN_SOURCE],
         ),
         (
-            "You simply can't trust apes with closed source ASI",
-            "unsupported speculation",
+            "Tencent announce WorldClaw",
+            "It looks impressive. Hopefully they open weight this later.",
+            [Category.AI, Category.LLM],
         ),
-        ("Benchmarking models on ability to prompt-engineer GPT-2", "no standalone news"),
         (
-            "Thinking about getting a subscription, which AI model should I choose?",
-            "community chatter/question",
+            "U.S. Department of Energy Launches the Genesis Open Models Initiative",
+            "The agency unveils its first open-weight model for scientific research.",
+            [Category.AI, Category.LLM, Category.RESEARCH],
+        ),
+        (
+            "We built a VR teleop setup where our semi-humanoid follows",
+            "The demo mirrors the operator's motion without scripted trajectories.",
+            [Category.ROBOTICS],
+        ),
+        (
+            "Parkinson's Patients Could Soon Benefit From Wearable Robotics",
+            "Research into soft exoskeletons has shown promising early results.",
+            [Category.ROBOTICS],
+        ),
+        (
+            "I Compressed Bad Apple into a 3MB Neural Network [P]",
+            "The network stores the video implicitly in five layers.",
+            [Category.AI, Category.LLM],
+        ),
+        (
+            "Running Whisper, Qwen, Nemotron and MOSS completely offline on iPhone [P]",
+            "I built an open-source iOS app for modern speech models.",
+            [Category.AI, Category.LLM, Category.OPEN_SOURCE],
+        ),
+        (
+            "Reddit is rolling out AI moderators, how long until every subreddit has one?",
+            "What do you think about the policy?",
+            [Category.AI, Category.WTF],
+        ),
+        (
+            "Meta debuts its first AI coding agent",
+            "The new agent competes with other coding products.",
+            [Category.AI],
+        ),
+        (
+            "Moonshot's AI model breaks out and escapes from an isolated environment",
+            "The model exploited a network misconfiguration during a security test.",
+            [Category.AI],
+        ),
+        (
+            'Cloudflare announces open-source Cloudflare OS as AI "operating system"',
+            "The company published the project today.",
+            [Category.AI, Category.OPEN_SOURCE],
+        ),
+        (
+            "New Orleans will use AI to answer 911 calls instead of a human",
+            "The city begins using the system this month.",
+            [Category.AI],
+        ),
+        (
+            "Building a C inference engine for BitNet — lessons from hitting 36 tok/s",
+            "It runs on a Xeon CPU without Python or CUDA.",
+            [Category.AI, Category.LLM, Category.OPEN_SOURCE],
         ),
     ],
 )
-def test_reddit_rss_anti_chatter_and_unverified_content_stays_rejected(
-    title: str, expected_reason: str
+def test_reddit_rss_confirmed_events_pass_with_unknown_engagement(
+    title: str, description: str, categories: list[Category]
 ) -> None:
     _, _, result = _assess(
         title,
+        description=description,
+        source_key="reddit-singularity",
+        categories=categories,
+        qualitative_signals=["reddit_rss", "reddit_seen_new"],
+    )
+
+    assert result.eligible, result.reasons
+    assert any("engagement unknown" in reason for reason in result.reasons)
+
+
+@pytest.mark.parametrize(
+    ("title", "description", "expected_reason"),
+    [
+        ("Need help running Qwen on MacBook", "My setup keeps failing.", "troubleshooting"),
+        ("llama.cpp performing slower than Ollama", "Here are my tests.", "benchmark"),
+        ("Which AI subscription should I choose?", "What do you use?", "advice"),
+        ("Why is Reddit delusional about AI?", "Change my mind.", "discussion"),
+        (
+            "OpenAI's hockey puck-sized gadget to cost over $300",
+            "Bloomberg reports it is expected in 2027, citing anonymous sources.",
+            "speculative",
+        ),
+        (
+            "DeepSeek tops AI models in affordability, new study says",
+            "The report compares token prices on benchmark tests.",
+            "benchmark",
+        ),
+        (
+            "OpenAI reportedly plans a new device",
+            "Anonymous sources say it might launch next year.",
+            "speculative",
+        ),
+    ],
+)
+def test_reddit_rss_chatter_rumours_and_benchmarks_stay_rejected(
+    title: str, description: str, expected_reason: str
+) -> None:
+    _, _, result = _assess(
+        title,
+        description=description,
         source_key="reddit-singularity",
         categories=[Category.AI, Category.LLM],
         qualitative_signals=["reddit_rss", "reddit_seen_new", "reddit_seen_hot"],
@@ -327,6 +420,39 @@ def test_reddit_rss_anti_chatter_and_unverified_content_stays_rejected(
 
     assert not result.eligible
     assert any(expected_reason in reason for reason in result.reasons)
+
+
+def test_reddit_rss_later_possibility_does_not_make_confirmed_release_speculative() -> None:
+    _, _, result = _assess(
+        "Project released its open-weight video model",
+        description="The weights shipped today. It could later add audio generation.",
+        source_key="reddit-local-llama",
+        categories=[Category.AI, Category.LLM, Category.OPEN_SOURCE],
+        qualitative_signals=["reddit_rss"],
+    )
+
+    assert result.eligible, result.reasons
+
+
+def test_reddit_rss_figure_and_comparison_entities_are_contextual() -> None:
+    _, _, common_noun = _assess(
+        "A figure in the benchmark compares several models",
+        description="The table includes OpenAI and Anthropic models.",
+        source_key="reddit-machine-learning",
+        categories=[Category.AI, Category.RESEARCH],
+        qualitative_signals=["reddit_rss"],
+    )
+    _, _, company = _assess(
+        "Figure AI releases a new humanoid robot",
+        source_key="reddit-robotics",
+        categories=[Category.AI, Category.ROBOTICS],
+        qualitative_signals=["reddit_rss"],
+    )
+
+    assert not common_noun.eligible
+    assert not any("recognizable company" in reason for reason in common_noun.reasons)
+    assert company.eligible, company.reasons
+    assert any("major recognizable company" in reason for reason in company.reasons)
 
 
 def test_tiny_github_exceptional_concept_is_discovery_only() -> None:

@@ -28,8 +28,8 @@ class EditorialConfig:
     reddit_min_velocity: float = 20.0
     reddit_min_mentions: int = 2
     reddit_min_fit: float = 75.0
-    reddit_rss_min_fit: float = 80.0
-    reddit_rss_exceptional_fit: float = 85.0
+    reddit_rss_min_fit: float = 65.0
+    reddit_rss_exceptional_fit: float = 75.0
     urgent_min_fit: float = 92.0
     urgent_min_delivery_score: float = 76.0
 
@@ -43,9 +43,22 @@ class EditorialAssessment:
     reasons: list[str]
 
 
+@dataclass(frozen=True, slots=True)
+class _RedditRSSSemantics:
+    confirmed_event: bool
+    strong_event: bool
+    kind: str | None = None
+    rejection: str | None = None
+
+
 _MAJOR_ENTITY = re.compile(
     r"\b(openai|anthropic|google(?: deepmind)?|deepmind|xai|meta|microsoft|apple|"
-    r"nvidia|tesla|neuralink|figure|boston dynamics|unitree)\b",
+    r"nvidia|tesla|neuralink|boston dynamics|unitree)\b",
+    re.IGNORECASE,
+)
+_FIGURE_AI_ENTITY = re.compile(
+    r"\b(?:figure(?: ai)?\b.{0,45}\b(?:company|robot(?:ics)?|humanoid)|"
+    r"(?:company|robot(?:ics)?|humanoid)\b.{0,45}\bfigure(?: ai)?)\b",
     re.IGNORECASE,
 )
 _MAJOR_EVENT = re.compile(
@@ -109,21 +122,67 @@ _FRONTIER_EVENT = re.compile(
     re.IGNORECASE,
 )
 _REDDIT_RSS_EVENT = re.compile(
-    r"\b(announce[sd]?|releas(?:e|es|ed|ing)|launch(?:es|ed|ing)?|"
-    r"unveil(?:s|ed)?|introduc(?:e|es|ed|ing)|demo(?:s|ed|ing)?|"
-    r"demonstrat(?:e|es|ed|ing)|test(?:s|ed|ing)|incident|breach|"
-    r"vulnerabilit(?:y|ies)|restores?|first trailer|new (?:frontier )?model|"
-    r"major update|breakthrough)\b",
+    r"\b(?:announc(?:e|es|ed)|releas(?:es|ed|ing)|debut(?:s|ed)?|"
+    r"launch(?:es|ed|ing)?|roll(?:s|ed|ing)? out|built|shipped|drop(?:s|ped)?|"
+    r"unveil(?:s|ed)?|demonstrat(?:e|es|ed|ing)|trained entirely on|"
+    r"designed|settles?|solved|open[ -]sources|publish(?:es|ed)|"
+    r"introduc(?:e|es|ed|ing)|achiev(?:e|es|ed)|begins? using|will use|"
+    r"went live|breaks? out|escapes?)\b",
     re.IGNORECASE,
 )
-_REDDIT_GENERIC_QUESTION = re.compile(
-    r"\b(which|what|should i|can someone|does anyone|any recommendations?|"
-    r"is it worth|how do i|what do you (?:think|use|recommend)|help me choose)\b",
+_REDDIT_RESEARCH_RESULT = re.compile(
+    r"(?:\b(?:poll|paper|study|research(?:ers)?)\b.{0,140}\b"
+    r"(?:finds?|found|shows?|shown|reports?|published|yielded|demonstrates?|achieves?)\b|"
+    r"\b(?:finds?|found|solv(?:e|es|ed)|settles?|designed)\b.{0,90}\b"
+    r"(?:error|problem|proofs?|virus(?:es)?|genomes?|result|accuracy|patients?)\b|"
+    r"\b(?:trained entirely on|compressed)\b|"
+    r"\b\d+(?:\.\d+)?%.{0,80}\b(?:workers|articles|humanoids?)\b|"
+    r"\b(?:got|scored)\s+100%)",
+    re.IGNORECASE,
+)
+_REDDIT_IMPLEMENTED_DEMO = re.compile(
+    r"(?:\b(?:i|we|owner)\s+(?:have\s+)?(?:built|made|compressed|gave)\b|"
+    r"^gave my\b|^real-time\b.{0,100}\bsystem\b|"
+    r"\brunning\b.{0,100}\b(?:offline|on[- ]device|iphone|android)\b|"
+    r"\b(?:tool|engine|app|setup|checkpoint)\b.{0,80}\b"
+    r"(?:running|closed[- ]loop|hits?|hitting)\b|"
+    r"\bhitting\s+\d+(?:\.\d+)?\s*(?:tok(?:ens?)?/s|tps)\b|"
+    r"^open(?:-weight)? model\s*:)",
+    re.IGNORECASE,
+)
+_REDDIT_ACTIVITY_EVENT = re.compile(
+    r"\b(?:collecting\b.{0,90}\b(?:data|training)|"
+    r"(?:moderators?|systems?|models?)\b.{0,30}\b(?:roll(?:s|ed|ing)? out)|"
+    r"(?:model|agent)\b.{0,60}\b(?:breaks? out|escapes?))\b",
+    re.IGNORECASE,
+)
+_REDDIT_CHATTER_LEAD = re.compile(
+    r"^(?:need help|help(?: me)?\b|which\b|what(?:'s| is| do)\b|why (?:is|are|do)\b|"
+    r"does anyone|can someone|any recommendations?|is it worth|how do i|"
+    r"thinking about|if you had to choose|found this\b)",
     re.IGNORECASE,
 )
 _REDDIT_UNSUPPORTED_SPECULATION = re.compile(
-    r"\b(rumou?r(?:ed|s)?|reportedly|unconfirmed|allegedly|leak(?:ed|s)?|"
-    r"might be|could be|will reportedly|i think|we need to|can't trust)\b",
+    r"\b(?:rumou?r(?:ed|s)?|reportedly|unconfirmed|allegedly|leak(?:ed|s)?|"
+    r"anonymous sources?|sources say|expected to|expects?\b|slated for|plans? to|"
+    r"potential new|might be|could be|could literally|will reportedly|spotted on)\b",
+    re.IGNORECASE,
+)
+_REDDIT_TROUBLESHOOTING = re.compile(
+    r"\b(?:need help|troubleshoot|setup\b.{0,40}\b(?:problem|issue)|"
+    r"running slower|performing slower|slower th[ae]n|doesn['’]?t work|"
+    r"which (?:ai )?(?:subscription|model|tool).{0,30}(?:choose|use)|"
+    r"help me choose)\b",
+    re.IGNORECASE,
+)
+_REDDIT_BENCHMARK_ONLY = re.compile(
+    r"\b(?:affordability|cheapest to run|tops? ai models?|table bench|"
+    r"performing slower|slower th[ae]n|benchmarking models?)\b",
+    re.IGNORECASE,
+)
+_REDDIT_INCOMPLETE_PROJECT = re.compile(
+    r"\b(?:will share the results later|maybe later i['’]?ll do the (?:code|circuits)|"
+    r"showing my .{0,50} update)\b",
     re.IGNORECASE,
 )
 
@@ -138,6 +197,13 @@ def assess_editorial_fit(
 
     categories = set(stored.item.categories)
     text = f"{stored.item.title}\n{stored.item.description}"
+    source_key = stored.item.source_key.casefold()
+    is_reddit_rss = source_key.startswith("reddit-") and _is_reddit_rss(stored)
+    reddit_semantics = (
+        _classify_reddit_rss_semantics(stored.item.title, stored.item.description)
+        if is_reddit_rss
+        else None
+    )
     reasons: list[str] = []
 
     category_baselines = {
@@ -156,8 +222,13 @@ def assess_editorial_fit(
     fit = max((category_baselines[category] for category in categories), default=20.0)
     reasons.append(f"category baseline: {fit:.0f}")
 
-    major_entity = bool(_MAJOR_ENTITY.search(text))
-    major_event = bool(_MAJOR_EVENT.search(text))
+    entity_text = stored.item.title if is_reddit_rss else text
+    major_entity = _has_major_entity(entity_text)
+    major_event = (
+        reddit_semantics.confirmed_event
+        if reddit_semantics is not None
+        else bool(_MAJOR_EVENT.search(text))
+    )
     public_implication = bool(_PUBLIC_IMPLICATION.search(text))
     cultural_event = bool(_CULTURAL_EVENT.search(text))
     unusual = bool(_UNUSUAL.search(text))
@@ -200,11 +271,12 @@ def assess_editorial_fit(
     if specialist:
         fit -= 42
         reasons.append("penalty: specialist-only technical work")
-    if _COMMUNITY_CHATTER.search(text):
+    if _COMMUNITY_CHATTER.search(text) and not (
+        reddit_semantics is not None and reddit_semantics.confirmed_event
+    ):
         fit -= 35
         reasons.append("penalty: low-signal community chatter/advice thread")
 
-    source_key = stored.item.source_key.casefold()
     github_gate = True
     if source_key.startswith("github-"):
         metrics = stored.item.popularity
@@ -285,16 +357,12 @@ def assess_editorial_fit(
             or comments >= config.reddit_min_comments
             or velocity >= config.reddit_min_velocity
         )
-        is_rss = _is_reddit_rss(stored)
-        if is_rss:
+        if is_reddit_rss:
+            assert reddit_semantics is not None
             rss_gate, rss_reason = _assess_reddit_rss_gate(
                 stored,
                 fit=fit,
-                independent=independent,
-                major_entity=major_entity,
-                public_implication=public_implication,
-                unusual=unusual,
-                text=text,
+                semantics=reddit_semantics,
                 config=config,
             )
             reddit_gate = rss_gate
@@ -368,29 +436,122 @@ def _is_reddit_rss(stored: StoredMaterial) -> bool:
     return not bool(api_metric_keys.intersection(stored.item.popularity))
 
 
+def _has_major_entity(text: str) -> bool:
+    """Match Figure only when it denotes the robotics company, not the common noun."""
+
+    return bool(_MAJOR_ENTITY.search(text) or _FIGURE_AI_ENTITY.search(text))
+
+
+def _reddit_primary_claim(title: str, description: str) -> str:
+    """Keep the title and opening factual clauses, excluding Reddit boilerplate."""
+
+    clean_description = re.sub(
+        r"\s*submitted by /u/.*$", "", description, flags=re.IGNORECASE | re.DOTALL
+    ).strip()
+    clauses = [part.strip() for part in re.split(r"(?<=[.!?])\s+|\n+", clean_description)]
+    opening = " ".join(part for part in clauses[:4] if part)
+    return f"{title.strip()}\n{opening}".strip()
+
+
+def _classify_reddit_rss_semantics(title: str, description: str) -> _RedditRSSSemantics:
+    """Classify the post's main claim instead of counting words in its whole body."""
+
+    title_claim = title.strip()
+    primary_claim = _reddit_primary_claim(title, description)
+    title_event = bool(
+        _REDDIT_RSS_EVENT.search(title_claim)
+        or _REDDIT_RESEARCH_RESULT.search(title_claim)
+        or _REDDIT_IMPLEMENTED_DEMO.search(title_claim)
+        or _REDDIT_ACTIVITY_EVENT.search(title_claim)
+        or _is_reddit_flair_research_result(title_claim)
+    )
+    primary_event = bool(
+        title_event
+        or _REDDIT_RSS_EVENT.search(primary_claim)
+        or _REDDIT_RESEARCH_RESULT.search(primary_claim)
+        or _REDDIT_IMPLEMENTED_DEMO.search(primary_claim)
+        or _REDDIT_ACTIVITY_EVENT.search(primary_claim)
+    )
+
+    # A benchmark can be a research result, but a price/speed/model comparison
+    # is not a news event merely because it names models or says "study".
+    if _REDDIT_BENCHMARK_ONLY.search(title_claim):
+        return _RedditRSSSemantics(False, False, rejection="benchmark/comparison claim")
+    if _REDDIT_TROUBLESHOOTING.search(title_claim):
+        return _RedditRSSSemantics(False, False, rejection="troubleshooting/advice request")
+    if _REDDIT_INCOMPLETE_PROJECT.search(primary_claim):
+        return _RedditRSSSemantics(False, False, rejection="unfinished personal project")
+    if not title_event and (_REDDIT_CHATTER_LEAD.search(title_claim) or "?" in title_claim):
+        return _RedditRSSSemantics(False, False, rejection="discussion/question/advice")
+
+    # Explicit, factual title claims win over a conversational question or a
+    # future-looking aside in selftext ("what do you think?", "hopefully...").
+    if title_event and not _REDDIT_UNSUPPORTED_SPECULATION.search(title_claim):
+        return _RedditRSSSemantics(True, True, kind=_reddit_event_kind(title_claim))
+
+    speculation = _REDDIT_UNSUPPORTED_SPECULATION.search(primary_claim)
+    if speculation:
+        # A cautious headline about future benefits may still report completed
+        # research whose opening clause states measured/promising results.
+        research_evidence = bool(
+            re.search(
+                r"\b(?:research|study|paper|results?)\b.{0,100}\b"
+                r"(?:shown?|found|demonstrat(?:e|es|ed)|published|promising)\b",
+                primary_claim,
+                re.IGNORECASE,
+            )
+        )
+        if research_evidence:
+            return _RedditRSSSemantics(True, True, kind="confirmed research result")
+        return _RedditRSSSemantics(False, False, rejection="unsupported speculative claim")
+
+    if primary_event:
+        return _RedditRSSSemantics(True, True, kind=_reddit_event_kind(primary_claim))
+    if _COMMUNITY_CHATTER.search(primary_claim):
+        return _RedditRSSSemantics(False, False, rejection="discussion/question/advice")
+    return _RedditRSSSemantics(False, False, rejection="no standalone factual event")
+
+
+def _is_reddit_flair_research_result(title: str) -> bool:
+    """Treat declarative research/project posts as results, not flair alone as proof."""
+
+    if not re.search(r"\[(?:r|p)\]\s*$", title, re.IGNORECASE):
+        return False
+    weak_leads = re.compile(
+        r"^(?:improved\b|how\b|why\b)|\bnot a single one\b|\?",
+        re.IGNORECASE,
+    )
+    return not bool(weak_leads.search(title))
+
+
+def _reddit_event_kind(claim: str) -> str:
+    if _REDDIT_RESEARCH_RESULT.search(claim) or _is_reddit_flair_research_result(claim):
+        return "confirmed research result"
+    if _REDDIT_IMPLEMENTED_DEMO.search(claim):
+        return "confirmed build/demo"
+    if re.search(r"\b(?:breaks? out|escapes?)\b", claim, re.IGNORECASE):
+        return "confirmed incident"
+    return "confirmed release/event"
+
+
 def _assess_reddit_rss_gate(
     stored: StoredMaterial,
     *,
     fit: float,
-    independent: bool,
-    major_entity: bool,
-    public_implication: bool,
-    unusual: bool,
-    text: str,
+    semantics: _RedditRSSSemantics,
     config: EditorialConfig,
 ) -> tuple[bool, str]:
-    """Apply an event-first gate when public RSS cannot expose engagement."""
+    """Apply an event-aware gate while treating absent RSS metrics as unknown."""
 
-    if _COMMUNITY_CHATTER.search(text) or _REDDIT_GENERIC_QUESTION.search(text):
-        return False, "Reddit RSS gate failed: community chatter/question"
-    if _REDDIT_UNSUPPORTED_SPECULATION.search(text):
-        return False, "Reddit RSS gate failed: unsupported speculation or opinion"
-    if not _REDDIT_RSS_EVENT.search(text):
-        return False, "Reddit RSS gate failed: no standalone news, release, demo, or incident"
-    if fit < config.reddit_rss_min_fit:
+    if not semantics.confirmed_event:
+        return False, f"Reddit RSS gate failed: {semantics.rejection}"
+    threshold = (
+        config.reddit_rss_min_fit if semantics.strong_event else config.reddit_rss_exceptional_fit
+    )
+    if fit < threshold:
         return (
             False,
-            f"Reddit RSS gate failed: fit below {config.reddit_rss_min_fit:.0f} event threshold",
+            f"Reddit RSS gate failed: fit below {threshold:.0f} confirmed-event threshold",
         )
 
     signals = set(stored.item.qualitative_signals)
@@ -400,19 +561,10 @@ def _assess_reddit_rss_gate(
         if signal.startswith("reddit_seen_")
     }
     multi_feed = len(listing_presence) >= 2
-    exceptional_fit = fit >= config.reddit_rss_exceptional_fit
-    strong_event = (major_entity and bool(_MAJOR_EVENT.search(text))) or (
-        public_implication and unusual
+    feed_detail = (
+        f"; RSS multi-feed presence: {' + '.join(sorted(listing_presence))}" if multi_feed else ""
     )
-    if exceptional_fit or independent or multi_feed or strong_event:
-        strength = (
-            "exceptional fit"
-            if exceptional_fit
-            else "independent cross-source mention"
-            if independent
-            else f"RSS multi-feed presence: {' + '.join(sorted(listing_presence))}"
-            if multi_feed
-            else "strong recognizable event signal"
-        )
-        return True, f"Reddit RSS gate passed: event-first path; {strength}"
-    return False, "Reddit RSS gate failed: no strong qualitative signal"
+    return (
+        True,
+        f"Reddit RSS gate passed: {semantics.kind}; engagement unknown{feed_detail}",
+    )

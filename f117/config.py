@@ -60,10 +60,10 @@ class Settings(BaseSettings):
     reddit_delivery_min_velocity: float = Field(default=20.0, ge=0.0)
     reddit_delivery_min_mentions: int = Field(default=2, ge=1)
     reddit_min_editorial_fit: float = Field(default=75.0, ge=0.0, le=100.0)
-    # RSS listings have no provider engagement metrics.  They need an explicit,
-    # stricter event path instead of being treated as a zero-score API post.
-    reddit_rss_min_editorial_fit: float = Field(default=80.0, ge=0.0, le=100.0)
-    reddit_rss_exceptional_editorial_fit: float = Field(default=85.0, ge=0.0, le=100.0)
+    # RSS listings have unknown provider engagement. Confirmed semantic events
+    # use a moderate fit floor; weak/no-event content never reaches this floor.
+    reddit_rss_min_editorial_fit: float = Field(default=65.0, ge=0.0, le=100.0)
+    reddit_rss_exceptional_editorial_fit: float = Field(default=75.0, ge=0.0, le=100.0)
 
     http_timeout_seconds: float = Field(default=20.0, ge=1.0, le=120.0)
     http_max_response_bytes: int = Field(default=5_000_000, ge=100_000)
