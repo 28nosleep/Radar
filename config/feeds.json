@@ -58,5 +58,63 @@
     "reputation": 0.95,
     "enabled": true,
     "default_categories": ["research"]
+  },
+  {
+    "key": "github-ai-robotics",
+    "name": "GitHub: AI and Robotics",
+    "kind": "github",
+    "feed_url": "https://api.github.com",
+    "site_url": "https://github.com/",
+    "item_limit": 20,
+    "github_queries": ["topic:artificial-intelligence", "topic:robotics", "topic:large-language-model"],
+    "github_include_releases": true,
+    "reputation": 0.9,
+    "enabled": true,
+    "default_categories": ["open_source"]
+  },
+  {
+    "key": "reddit-singularity", "name": "Reddit: r/singularity", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "singularity", "reddit_listing": "hot", "item_limit": 25, "reputation": 0.65, "enabled": true, "default_categories": []
+  },
+  {
+    "key": "reddit-local-llama", "name": "Reddit: r/LocalLLaMA", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "LocalLLaMA", "reddit_listing": "hot", "item_limit": 25, "reputation": 0.75, "enabled": true, "default_categories": ["ai", "llm", "open_source"]
+  },
+  {
+    "key": "reddit-machine-learning", "name": "Reddit: r/MachineLearning", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "MachineLearning", "reddit_listing": "hot", "item_limit": 25, "reputation": 0.8, "enabled": true, "default_categories": ["ai", "research"]
+  },
+  {
+    "key": "reddit-robotics", "name": "Reddit: r/robotics", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "robotics", "reddit_listing": "hot", "item_limit": 25, "reputation": 0.75, "enabled": true, "default_categories": ["robotics"]
+  },
+  {
+    "key": "reddit-artificial", "name": "Reddit: r/artificial", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "artificial", "reddit_listing": "hot", "item_limit": 25, "reputation": 0.65, "enabled": true, "default_categories": ["ai"]
+  },
+  {
+    "key": "reddit-futurology", "name": "Reddit: r/Futurology", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "Futurology", "reddit_listing": "hot", "item_limit": 20, "reputation": 0.55, "enabled": true, "default_categories": []
+  },
+  {
+    "key": "reddit-transhumanism", "name": "Reddit: r/transhumanism", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "transhumanism", "reddit_listing": "hot", "item_limit": 20, "reputation": 0.55, "enabled": true, "default_categories": ["brain_interface"]
+  },
+  {
+    "key": "reddit-bci", "name": "Reddit: r/BCI", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "BCI", "reddit_listing": "hot", "item_limit": 20, "reputation": 0.65, "enabled": true, "default_categories": ["brain_interface"]
+  },
+  {
+    "key": "reddit-stable-diffusion", "name": "Reddit: r/StableDiffusion", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "StableDiffusion", "reddit_listing": "hot", "item_limit": 20, "reputation": 0.65, "enabled": true, "default_categories": ["ai", "open_source"]
+  },
+  {
+    "key": "reddit-hardware", "name": "Reddit: r/hardware", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "hardware", "reddit_listing": "hot", "item_limit": 20, "reputation": 0.55, "enabled": true, "default_categories": ["hardware"]
+  },
+  {
+    "key": "reddit-openai", "name": "Reddit: r/OpenAI", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "OpenAI", "reddit_listing": "hot", "item_limit": 15, "reputation": 0.4, "enabled": true, "default_categories": ["ai"]
+  },
+  {
+    "key": "reddit-control-problem", "name": "Reddit: r/ControlProblem", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "ControlProblem", "reddit_listing": "hot", "item_limit": 15, "reputation": 0.35, "enabled": true, "default_categories": ["ai", "research"]
+  },
+  {
+    "key": "reddit-technology", "name": "Reddit: r/technology", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "technology", "reddit_listing": "hot", "item_limit": 15, "reputation": 0.35, "enabled": true, "default_categories": []
+  },
+  {
+    "key": "reddit-chatgpt", "name": "Reddit: r/ChatGPT", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "ChatGPT", "reddit_listing": "hot", "item_limit": 15, "reputation": 0.35, "enabled": true, "default_categories": ["ai", "llm"]
+  },
+  {
+    "key": "youtube-ai-robotics", "name": "YouTube: AI and Robotics", "kind": "youtube", "feed_url": "https://www.googleapis.com/youtube/v3", "site_url": "https://www.youtube.com/", "item_limit": 20, "youtube_queries": ["AI robotics humanoid research demo", "AI alignment safety research"], "reputation": 0.7, "enabled": false, "default_categories": ["ai", "robotics"]
   }
 ]

@@ -111,6 +111,11 @@ class DigestService:
                     if await self.repository.has_material(
                         source_result.state.id, collected.external_id
                     ):
+                        await self.repository.refresh_observation(
+                            source_result.state.id,
+                            collected.external_id,
+                            dict(collected.popularity),
+                        )
                         continue
                     try:
                         normalized = classify_item(normalize_item(collected))

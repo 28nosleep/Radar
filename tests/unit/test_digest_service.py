@@ -60,6 +60,11 @@ class _MemoryRepository:
             for material in self.materials
         )
 
+    async def refresh_observation(
+        self, source_id: UUID, external_id: str, metrics: dict[str, float]
+    ) -> None:
+        del source_id, external_id, metrics
+
     async def add_material(
         self,
         source_id: UUID,

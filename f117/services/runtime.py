@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from f117.adapters.arxiv import ArxivCollector
 from f117.adapters.collectors import SourceCollector
+from f117.adapters.github import GitHubCollector
 from f117.adapters.hacker_news import HackerNewsCollector
 from f117.adapters.openai_editorial import (
     DeterministicEditorialEnricher,
@@ -9,8 +10,10 @@ from f117.adapters.openai_editorial import (
     OpenAIEditorialEnricher,
     ResilientEditorialEnricher,
 )
+from f117.adapters.reddit import RedditCollector
 from f117.adapters.rss import RSSCollector
 from f117.adapters.telegram import DigestNotifier, DryRunNotifier, TelegramNotifier
+from f117.adapters.youtube import YouTubeCollector
 from f117.config import Settings
 from f117.services.digest import DigestService
 from f117.storage.repository import Repository
@@ -105,6 +108,22 @@ def build_digest_service(settings: Settings, repository: Repository) -> DigestSe
             timeout_seconds=settings.http_timeout_seconds,
             max_response_bytes=settings.http_max_response_bytes,
             user_agent=settings.http_user_agent,
+        ),
+        github=GitHubCollector(
+            timeout_seconds=settings.http_timeout_seconds,
+            user_agent=settings.http_user_agent,
+            api_token=_secret_value(settings.github_api_token),
+        ),
+        reddit=RedditCollector(
+            timeout_seconds=settings.http_timeout_seconds,
+            user_agent=settings.http_user_agent,
+            client_id=_secret_value(settings.reddit_client_id),
+            client_secret=_secret_value(settings.reddit_client_secret),
+        ),
+        youtube=YouTubeCollector(
+            timeout_seconds=settings.http_timeout_seconds,
+            user_agent=settings.http_user_agent,
+            api_key=_secret_value(settings.youtube_api_key),
         ),
     )
     return DigestService(

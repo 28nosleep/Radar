@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     http_max_response_bytes: int = Field(default=5_000_000, ge=100_000)
     rss_max_concurrency: int = Field(default=8, ge=1, le=32)
     http_user_agent: str = "Radar-Intelligence-Engine/0.1 (+personal-feed-reader)"
+    github_api_token: SecretStr | None = None
+    reddit_client_id: SecretStr | None = None
+    reddit_client_secret: SecretStr | None = None
+    youtube_api_key: SecretStr | None = None
 
     rank_freshness_weight: float = Field(default=20.0, ge=0.0)
     rank_reputation_weight: float = Field(default=15.0, ge=0.0)

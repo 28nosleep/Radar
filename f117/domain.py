@@ -31,10 +31,16 @@ class FeedSource(BaseModel):
     reputation: float = Field(default=0.5, ge=0.0, le=1.0)
     enabled: bool = True
     default_categories: list[Category] = Field(default_factory=list)
-    kind: Literal["rss", "hacker_news", "arxiv"] = "rss"
+    kind: Literal["rss", "hacker_news", "arxiv", "github", "reddit", "youtube"] = "rss"
     collection: Literal["top", "new", "best"] = "top"
     item_limit: int = Field(default=30, ge=1, le=100)
     arxiv_categories: list[str] = Field(default_factory=list)
+    github_queries: list[str] = Field(default_factory=list)
+    github_include_releases: bool = True
+    reddit_subreddit: str | None = None
+    reddit_listing: Literal["hot", "new", "top"] = "hot"
+    youtube_channel_ids: list[str] = Field(default_factory=list)
+    youtube_queries: list[str] = Field(default_factory=list)
 
 
 class CollectedItem(BaseModel):
@@ -98,6 +104,13 @@ class StoredMaterial(BaseModel):
     llm_enrichment: EditorialEnrichment | None = None
     llm_model: str | None = None
     llm_usage: dict[str, int] = Field(default_factory=dict)
+
+
+class MetricSnapshot(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    captured_at: datetime
+    metrics: dict[str, float]
 
 
 class RankedMaterial(BaseModel):

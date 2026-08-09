@@ -161,6 +161,8 @@ def render_card(card: EditorialCard, *, section: str | None = None, debug: bool 
         f"Теги: {_escape_bounded(categories or _category_label(Category.OTHER), 160)}\n"
         f'<a href="{link}">Открыть материал</a>'
     )
+    if growth_line := _growth_line(material.popularity):
+        rendered = rendered.replace("\nИсточник:", f"\n{growth_line}\n\nИсточник:")
     if debug:
         reasons = "; ".join(material.score_reasons[:3])
         rendered += (
@@ -235,3 +237,11 @@ def _category_label(category: Category) -> str:
         Category.WTF: "необычное",
         Category.OTHER: "другое",
     }[category]
+
+
+def _growth_line(metrics: dict[str, float]) -> str | None:
+    percent = metrics.get("growth_percent")
+    hours = metrics.get("growth_window_hours")
+    if percent is None or hours is None or percent <= 0 or hours <= 0:
+        return None
+    return f"Набирает: +{percent:.0f}% за {hours:.1f} ч"

@@ -100,6 +100,9 @@ _GROWTH_TARGETS: Mapping[str, float] = {
     "upvotes_per_hour": 100.0,
     "views_per_hour": 100_000.0,
     "youtube_views_per_hour": 100_000.0,
+    "growth_per_hour": 25.0,
+    "reddit_upvotes_per_hour": 100.0,
+    "reddit_comments_per_hour": 50.0,
 }
 
 

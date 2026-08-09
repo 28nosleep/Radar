@@ -12,12 +12,19 @@ from f117.domain import (
     Category,
     EditorialEnrichment,
     FeedSource,
+    MetricSnapshot,
     NormalizedItem,
     RankedMaterial,
     StoredMaterial,
 )
 from f117.storage.database import Database
-from f117.storage.models import DeliveryModel, DigestRunModel, MaterialModel, SourceModel
+from f117.storage.models import (
+    DeliveryModel,
+    DigestRunModel,
+    MaterialModel,
+    MetricSnapshotModel,
+    SourceModel,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,12 +173,64 @@ class Repository:
                         .values(independent_mentions=MaterialModel.independent_mentions + 1)
                     )
                 await session.flush()
+                if item.popularity:
+                    session.add(
+                        MetricSnapshotModel(
+                            material_id=row.id,
+                            captured_at=datetime.now(UTC),
+                            metrics=dict(item.popularity),
+                        )
+                    )
                 stored = self._to_stored(row)
                 await session.commit()
                 return stored
             except Exception:
                 await session.rollback()
                 raise
+
+    async def refresh_observation(
+        self, source_id: UUID, external_id: str, metrics: dict[str, float]
+    ) -> None:
+        """Persist an observation and derived growth atomically for an existing item."""
+
+        if not metrics:
+            return
+        captured_at = datetime.now(UTC)
+        async with self.database.session() as session:
+            row = await session.scalar(
+                select(MaterialModel).where(
+                    MaterialModel.source_id == source_id, MaterialModel.external_id == external_id
+                )
+            )
+            if row is None:
+                return
+            previous = await session.scalar(
+                select(MetricSnapshotModel)
+                .where(MetricSnapshotModel.material_id == row.id)
+                .order_by(MetricSnapshotModel.captured_at.desc())
+                .limit(1)
+            )
+            updated_metrics = _with_growth(metrics, previous, captured_at)
+            row.popularity = updated_metrics
+            session.add(
+                MetricSnapshotModel(
+                    material_id=row.id, captured_at=captured_at, metrics=dict(metrics)
+                )
+            )
+            await session.commit()
+
+    async def metric_history(self, material_id: UUID) -> list[MetricSnapshot]:
+        async with self.database.session() as session:
+            rows = (
+                await session.scalars(
+                    select(MetricSnapshotModel)
+                    .where(MetricSnapshotModel.material_id == material_id)
+                    .order_by(MetricSnapshotModel.captured_at)
+                )
+            ).all()
+            return [
+                MetricSnapshot(captured_at=row.captured_at, metrics=row.metrics) for row in rows
+            ]
 
     async def save_ranking(self, ranked: RankedMaterial) -> None:
         await self.save_rankings([ranked])
@@ -350,3 +409,43 @@ class Repository:
             llm_model=row.llm_model,
             llm_usage=row.llm_usage or {},
         )
+
+
+_GROWTH_METRIC_KEYS = (
+    "github_stars",
+    "reddit_upvotes",
+    "youtube_views",
+    "points",
+    "views",
+    "stars",
+    "upvotes",
+)
+
+
+def _with_growth(
+    metrics: dict[str, float], previous: MetricSnapshotModel | None, captured_at: datetime
+) -> dict[str, float]:
+    result = dict(metrics)
+    if previous is None:
+        return result
+    elapsed_hours = (captured_at - previous.captured_at).total_seconds() / 3600.0
+    if elapsed_hours <= 0:
+        return result
+    for key in _GROWTH_METRIC_KEYS:
+        if key not in metrics or key not in previous.metrics:
+            continue
+        absolute = float(metrics[key]) - float(previous.metrics[key])
+        if absolute < 0:
+            continue
+        baseline = float(previous.metrics[key])
+        percent = (absolute / baseline * 100.0) if baseline > 0 else 0.0
+        result.update(
+            {
+                "growth_absolute": round(absolute, 2),
+                "growth_percent": round(percent, 2),
+                "growth_per_hour": round(percent / elapsed_hours, 2),
+                "growth_window_hours": round(elapsed_hours, 2),
+            }
+        )
+        return result
+    return result

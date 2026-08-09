@@ -91,6 +91,18 @@ def test_debug_card_exposes_internal_score_only_on_request() -> None:
     assert "Debug: score" in render_card(_card(Category.AI), debug=True)
 
 
+def test_editorial_card_shows_growth_only_when_snapshot_data_exists() -> None:
+    card = _card(Category.AI).model_copy(
+        update={
+            "material": _card(Category.AI).material.model_copy(
+                update={"popularity": {"growth_percent": 240.0, "growth_window_hours": 4.0}}
+            )
+        }
+    )
+
+    assert "Набирает: +240% за 4.0 ч" in render_card(card)
+
+
 @pytest.mark.asyncio
 async def test_telegram_adapter_sends_intro_and_one_message_per_card(
     monkeypatch: pytest.MonkeyPatch,

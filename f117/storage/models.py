@@ -135,3 +135,15 @@ class DeliveryModel(Base):
     )
     telegram_message_id: Mapped[str | None] = mapped_column(String(120))
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MetricSnapshotModel(Base):
+    __tablename__ = "metric_snapshots"
+    __table_args__ = (Index("ix_metric_snapshots_material_captured", "material_id", "captured_at"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    material_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("materials.id", ondelete="CASCADE"), nullable=False
+    )
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    metrics: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False, default=dict)
