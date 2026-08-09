@@ -6,8 +6,10 @@ import hashlib
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from html import unescape
 from time import struct_time
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import aiohttp
 import feedparser
@@ -180,6 +182,9 @@ def _entry_datetime(entry: Any) -> datetime | None:
 
 
 _IMAGE_RE = re.compile(r"<img\b[^>]*\bsrc=[\"']([^\"']+)", re.IGNORECASE)
+_REDDIT_NON_CONTENT_IMAGE_RE = re.compile(
+    r"(?:avatar|icon|logo|pixel|placeholder|redditstatic)", re.IGNORECASE
+)
 
 
 def _entry_media(entry: Any, description: str) -> tuple[str, str | None, str | None, str | None]:
@@ -189,31 +194,59 @@ def _entry_media(entry: Any, description: str) -> tuple[str, str | None, str | N
         if isinstance(value, dict):
             value = value.get("url") or value.get("href")
         if isinstance(value, str) and value.strip().startswith(("https://", "http://")):
-            return value.strip()
+            return unescape(value.strip())
         return None
+
+    def is_usable_image(url: str) -> bool:
+        parsed = urlsplit(url)
+        if _REDDIT_NON_CONTENT_IMAGE_RE.search(parsed.path) or _REDDIT_NON_CONTENT_IMAGE_RE.search(
+            parsed.hostname or ""
+        ):
+            return False
+        dimensions = parse_qs(parsed.query)
+        try:
+            width = int(dimensions.get("width", ["0"])[0])
+            height = int(dimensions.get("height", ["0"])[0])
+        except ValueError:
+            return False
+        return width <= 0 or height <= 0 or max(width, height) >= 120
+
+    def html_images() -> list[str]:
+        fragments = [description]
+        content = entry.get("content") or []
+        for value in content if isinstance(content, list) else [content]:
+            if isinstance(value, dict) and isinstance(value.get("value"), str):
+                fragments.append(value["value"])
+            elif isinstance(value, str):
+                fragments.append(value)
+        return [
+            url
+            for fragment in fragments
+            for matched in _IMAGE_RE.findall(fragment)
+            if (url := url_from(matched)) is not None and is_usable_image(url)
+        ]
 
     media_content = entry.get("media_content") or []
     for value in media_content if isinstance(media_content, list) else [media_content]:
         if url := url_from(value):
             medium = value.get("medium") if isinstance(value, dict) else None
-            return ("video" if medium == "video" else "image", url, None, "rss:media")
+            if medium == "video":
+                return "video", url, None, "rss:media"
+            if is_usable_image(url):
+                return "image", url, None, "rss:media"
+    for url in html_images():
+        return "image", url, url, "rss:content"
     media_thumbnail = entry.get("media_thumbnail") or []
     for value in media_thumbnail if isinstance(media_thumbnail, list) else [media_thumbnail]:
-        if url := url_from(value):
+        if (url := url_from(value)) and is_usable_image(url):
             return "image", url, url, "rss:thumbnail"
     enclosures = entry.get("enclosures") or []
     for value in enclosures if isinstance(enclosures, list) else [enclosures]:
         if url := url_from(value):
             mime = value.get("type", "") if isinstance(value, dict) else ""
-            return (
-                "video" if str(mime).startswith("video/") else "image",
-                url,
-                None,
-                "rss:enclosure",
-            )
+            if str(mime).startswith("image/") and is_usable_image(url):
+                return "image", url, None, "rss:enclosure"
     image = entry.get("image")
-    if url := url_from(image):
+    if (url := url_from(image)) and is_usable_image(url):
         return "image", url, url, "rss:image"
-    if match := _IMAGE_RE.search(description):
-        return "image", match.group(1), match.group(1), "rss:content"
     return "none", None, None, None

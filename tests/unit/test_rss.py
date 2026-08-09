@@ -94,6 +94,75 @@ def test_rss_extracts_publisher_image_metadata() -> None:
     assert item.media_source == "rss:media"
 
 
+def test_rss_extracts_atom_content_image_before_reddit_thumbnail() -> None:
+    item = RSSCollector._entry_to_item(
+        _source(),
+        {
+            "title": "Image post",
+            "link": "https://www.reddit.com/r/example/comments/post-1/image_post/",
+            "id": "post-1",
+            "content": [
+                {
+                    "value": (
+                        '<table><img src="https://preview.redd.it/post.jpeg?width=640&amp;'
+                        'crop=smart&amp;auto=webp" /></table>'
+                    )
+                }
+            ],
+            "media_thumbnail": [
+                {
+                    "url": (
+                        "https://preview.redd.it/post.jpeg?width=140&amp;height=98&amp;"
+                        "auto=webp"
+                    )
+                }
+            ],
+        },
+        datetime(2026, 8, 9, tzinfo=UTC),
+    )
+
+    assert item is not None
+    assert item.media_url == "https://preview.redd.it/post.jpeg?width=640&crop=smart&auto=webp"
+    assert item.thumbnail_url == item.media_url
+    assert item.media_source == "rss:content"
+
+
+def test_rss_ignores_reddit_icon_and_non_image_enclosure() -> None:
+    item = RSSCollector._entry_to_item(
+        _source(),
+        {
+            "title": "No usable image",
+            "link": "https://example.com/post",
+            "id": "post-1",
+            "content": [{"value": '<img src="https://styles.redditmedia.com/logo.png">'}],
+            "enclosures": [{"href": "https://cdn.example.com/file.pdf", "type": "application/pdf"}],
+        },
+        datetime(2026, 8, 9, tzinfo=UTC),
+    )
+
+    assert item is not None
+    assert item.media_type == "none"
+    assert item.media_url is None
+
+
+def test_rss_extracts_image_enclosure() -> None:
+    item = RSSCollector._entry_to_item(
+        _source(),
+        {
+            "title": "Enclosed image",
+            "link": "https://example.com/post",
+            "id": "post-1",
+            "enclosures": [{"href": "https://cdn.example.com/photo.jpg", "type": "image/jpeg"}],
+        },
+        datetime(2026, 8, 9, tzinfo=UTC),
+    )
+
+    assert item is not None
+    assert item.media_type == "image"
+    assert item.media_url == "https://cdn.example.com/photo.jpg"
+    assert item.media_source == "rss:enclosure"
+
+
 @pytest.mark.asyncio
 async def test_fetch_parses_atom_and_uses_conditional_request_headers() -> None:
     session = _Session(
