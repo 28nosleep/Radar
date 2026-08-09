@@ -19,6 +19,7 @@ from uuid import UUID
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import update
 
 from f117.adapters.rss import FeedFetchResult
 from f117.adapters.telegram import DeliveryCallback, DeliveryReceipt, TelegramError
@@ -60,7 +61,13 @@ async def repository() -> Repository:
         await database.dispose()
 
 
-def _settings(tmp_path: Path, *, dry_run: bool = False, top_n: int = 3) -> Settings:
+def _settings(
+    tmp_path: Path,
+    *,
+    dry_run: bool = False,
+    top_n: int = 3,
+    delivery_claim_lease_seconds: int = 300,
+) -> Settings:
     catalog = tmp_path / "feeds.json"
     catalog.write_text(
         json.dumps(
@@ -83,6 +90,7 @@ def _settings(tmp_path: Path, *, dry_run: bool = False, top_n: int = 3) -> Setti
         digest_top_n=top_n,
         candidate_lookback_hours=24,
         editorial_retry_base_seconds=1,
+        delivery_claim_lease_seconds=delivery_claim_lease_seconds,
     )
 
 
@@ -324,7 +332,7 @@ async def test_successful_openai_card_is_saved_before_later_material_crashes(
 
 
 @pytest.mark.asyncio
-async def test_telegram_success_then_database_failure_does_not_resend(
+async def test_telegram_success_then_database_failure_is_held_after_lease_expiry(
     repository: Repository, tmp_path: Path
 ) -> None:
     material_id = (await _seed(repository, _item("delivery")))[0]
@@ -348,11 +356,44 @@ async def test_telegram_success_then_database_failure_does_not_resend(
         ).run_once()
     assert notifier.sent == [material_id]
 
-    retry_notifier = _Notifier()
+    async with repository.database.session() as session:
+        row = await session.get(MaterialModel, material_id)
+        assert row is not None and row.delivery_ambiguous_at is not None
+        await session.execute(
+            update(MaterialModel)
+            .where(MaterialModel.id == material_id)
+            .values(delivery_started_at=datetime.now(UTC) - timedelta(seconds=301))
+        )
+        await session.commit()
+    assert material_id not in {
+        candidate.id for candidate in await repository.digest_candidates(lookback_hours=24)
+    }
+
+
+@pytest.mark.asyncio
+async def test_configured_delivery_lease_is_used_for_candidate_selection(
+    repository: Repository, tmp_path: Path
+) -> None:
+    material_id = (await _seed(repository, _item("custom-lease")))[0]
+    assert await repository.begin_delivery(material_id, lease_seconds=30)
+    async with repository.database.session() as session:
+        await session.execute(
+            update(MaterialModel)
+            .where(MaterialModel.id == material_id)
+            .values(delivery_started_at=datetime.now(UTC) - timedelta(seconds=31))
+        )
+        await session.commit()
+
+    notifier = _Notifier()
     await _service(
-        _settings(tmp_path, top_n=1), repository, _Collector(), _Enricher(), retry_notifier
+        _settings(tmp_path, top_n=1, delivery_claim_lease_seconds=30),
+        repository,
+        _Collector(),
+        _Enricher(),
+        notifier,
     ).run_once()
-    assert retry_notifier.sent == []
+
+    assert notifier.sent == [material_id]
 
 
 @pytest.mark.asyncio

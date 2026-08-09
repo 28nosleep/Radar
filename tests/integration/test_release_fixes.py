@@ -117,6 +117,27 @@ async def test_stale_delivery_lease_recovers_but_ambiguous_requires_manual_recov
 
 
 @pytest.mark.asyncio
+async def test_pre_request_claim_recovers_after_configured_lease(repository: Repository) -> None:
+    material_id = await _add(repository, _item("rss", "pre-request-crash"))
+    assert await repository.begin_delivery(material_id, lease_seconds=30)
+
+    async with repository.database.session() as session:
+        await session.execute(
+            update(MaterialModel)
+            .where(MaterialModel.id == material_id)
+            .values(delivery_started_at=datetime.now(UTC) - timedelta(seconds=31))
+        )
+        await session.commit()
+
+    assert [
+        item.id
+        for item in await repository.digest_candidates(
+            lookback_hours=24, delivery_claim_lease_seconds=30
+        )
+    ] == [material_id]
+
+
+@pytest.mark.asyncio
 async def test_changed_undelivered_content_invalidates_cached_enrichment(
     repository: Repository,
 ) -> None:
@@ -237,3 +258,49 @@ async def test_due_editorial_retry_gets_bounded_fifo_slot_among_new_candidates(
 
     assert selected[0].material_id == retry.id
     assert len(selected) == 3
+
+
+@pytest.mark.asyncio
+async def test_editorial_retry_slots_preserve_a_fresh_slot_and_handle_top_one(
+    repository: Repository,
+) -> None:
+    state = (await repository.sync_sources([_source()]))[0]
+    retry_one = await repository.add_material(state.id, _item("rss", "retry-one"))
+    retry_two = await repository.add_material(state.id, _item("rss", "retry-two"))
+    await repository.record_editorial_failure(retry_one.id, error="429", retry_delay_seconds=0)
+    await repository.record_editorial_failure(retry_two.id, error="429", retry_delay_seconds=0)
+    for number in range(11):
+        await repository.add_material(state.id, _item("rss", f"fresh-{number}"))
+    candidates = await repository.digest_candidates(lookback_hours=24)
+    ranked = [
+        RankedMaterial(
+            material_id=candidate.id,
+            title=candidate.item.title,
+            url=candidate.item.url,
+            source_name=candidate.item.source_name,
+            published_at=candidate.item.published_at,
+            description=candidate.item.description,
+            categories=candidate.item.categories,
+            popularity=candidate.item.popularity,
+            independent_mentions=candidate.independent_mentions,
+            score=10.0 if candidate.id in {retry_one.id, retry_two.id} else 100.0,
+            score_reasons=[],
+        )
+        for candidate in candidates
+    ]
+
+    selected = _select_for_delivery(ranked, candidates, top_n=3, editorial_retry_slots=3)
+
+    assert {material.material_id for material in selected[:2]} == {retry_one.id, retry_two.id}
+    assert selected[2].material_id not in {retry_one.id, retry_two.id}
+
+    top_one = _select_for_delivery(ranked, candidates, top_n=1, editorial_retry_slots=3)
+    assert top_one[0].material_id not in {retry_one.id, retry_two.id}
+
+    retry_only = _select_for_delivery(
+        [material for material in ranked if material.material_id == retry_one.id],
+        [candidate for candidate in candidates if candidate.id == retry_one.id],
+        top_n=1,
+        editorial_retry_slots=3,
+    )
+    assert [material.material_id for material in retry_only] == [retry_one.id]

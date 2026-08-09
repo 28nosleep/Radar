@@ -216,7 +216,8 @@ class DigestService:
                 )
 
             candidates = await self.repository.digest_candidates(
-                lookback_hours=self.settings.candidate_lookback_hours
+                lookback_hours=self.settings.candidate_lookback_hours,
+                delivery_claim_lease_seconds=self.settings.delivery_claim_lease_seconds,
             )
             counts["candidate_count"] = len(candidates)
             ranked = [
@@ -288,10 +289,20 @@ class DigestService:
                         )
 
                 async def record_delivery(receipt: DeliveryReceipt) -> None:
-                    await self.repository.record_deliveries(
-                        run_id,
-                        [(receipt.material_id, receipt.message_id)],
-                    )
+                    try:
+                        await self.repository.record_deliveries(
+                            run_id,
+                            [(receipt.material_id, receipt.message_id)],
+                        )
+                    except Exception as exc:
+                        # Telegram has already returned a receipt, so a failed
+                        # persistence attempt must never fall back to a stale
+                        # pre-request lease and cause an automatic resend.
+                        await self.repository.mark_delivery_ambiguous(
+                            receipt.material_id,
+                            error=f"Telegram receipt persistence failed: {exc}",
+                        )
+                        raise
                     recorded_ids.add(receipt.material_id)
                     counts["delivered_count"] += 1
 
@@ -521,7 +532,11 @@ def _select_for_delivery(
             material.material_id,
         ),
     )
-    reserved_retries = editorial_retries[: min(editorial_retry_slots, available_slots)]
+    # Fresh material must retain a place whenever a multi-card digest has one
+    # available. A single-card digest prefers fresh material, but can still
+    # deliver a due retry when it is the only candidate.
+    effective_retry_slots = min(editorial_retry_slots, max(0, top_n - 1))
+    reserved_retries = editorial_retries[: min(effective_retry_slots, available_slots)]
     available_slots -= len(reserved_retries)
     fresh = sorted(
         (
@@ -543,7 +558,10 @@ def _select_for_delivery(
     )
     if diversity_config is not None:
         fresh = diversify(fresh, config=diversity_config)
-    return retry_queue[:top_n] + reserved_retries + fresh[:available_slots]
+    selected = retry_queue[:top_n] + reserved_retries + fresh[:available_slots]
+    if top_n == 1 and not selected and editorial_retry_slots > 0 and editorial_retries:
+        return [editorial_retries[0]]
+    return selected
 
 
 def _selection_score(
