@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     telegram_bot_token: SecretStr | None = None
     telegram_chat_id: str | None = None
     telegram_api_base: str = "https://api.telegram.org"
+    telegram_format: Literal["editorial", "debug"] = "editorial"
 
     dry_run: bool = True
     log_level: str = "INFO"

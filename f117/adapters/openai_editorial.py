@@ -27,8 +27,7 @@ class DeterministicEditorialEnricher:
                 enrichment=EditorialEnrichment(
                     title_ru=material.title,
                     summary_ru=_truncate(material.description or material.title, 500),
-                    why_important="; ".join(material.score_reasons[:3])
-                    or "Материал вошёл в TOP по правиловому рейтингу.",
+                    why_important=_fallback_why_important(material),
                     post_fit_score=max(0, min(10, round(material.score / 10))),
                 ),
             )
@@ -154,3 +153,13 @@ def _truncate(value: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     return value[: limit - 1].rstrip() + "…"
+
+
+def _fallback_why_important(material: RankedMaterial) -> str:
+    """Keep zero-cost editorial previews readable and free of score internals."""
+
+    if material.independent_mentions >= 2:
+        return "Тему независимо заметили несколько источников, поэтому она заслуживает внимания."
+    if material.popularity:
+        return "Материал уже заметно обсуждают, поэтому он может быстро стать важной темой."
+    return "Материал отобран по свежести, репутации источника и соответствию темам Radar."

@@ -6,8 +6,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
+from f117.adapters.collectors import SourceCollector
 from f117.adapters.openai_editorial import EditorialEnricher
-from f117.adapters.rss import FeedFetchResult, RSSCollector
+from f117.adapters.rss import FeedFetchResult
 from f117.adapters.telegram import DeliveryReceipt, DigestNotifier
 from f117.config import Settings
 from f117.domain import EditorialCard, RankedMaterial, StoredMaterial
@@ -48,14 +49,14 @@ class _SourceResult:
 
 
 class DigestService:
-    """One complete RSS-to-Telegram run of the M1 vertical slice."""
+    """One complete configured-source-to-Telegram digest run."""
 
     def __init__(
         self,
         *,
         settings: Settings,
         repository: Repository,
-        collector: RSSCollector,
+        collector: SourceCollector,
         enricher: EditorialEnricher,
         notifier: DigestNotifier,
     ) -> None:
@@ -115,7 +116,7 @@ class DigestService:
                         normalized = classify_item(normalize_item(collected))
                     except (TypeError, ValueError) as exc:
                         logger.warning(
-                            "Rejected RSS item from %s (%s): %s",
+                            "Rejected item from %s (%s): %s",
                             source_result.state.source.key,
                             collected.external_id,
                             exc,
@@ -246,7 +247,7 @@ class DigestService:
                 )
         except Exception as exc:
             error = str(exc)
-            logger.warning("RSS source %s failed: %s", state.source.key, error)
+            logger.warning("Source %s failed: %s", state.source.key, error)
             await self.repository.record_source_result(
                 state.id,
                 etag=state.etag,

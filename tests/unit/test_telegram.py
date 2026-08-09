@@ -76,6 +76,21 @@ def test_group_cards_uses_required_editorial_sections() -> None:
     ]
 
 
+def test_editorial_card_is_human_readable_and_hides_debug_metrics() -> None:
+    rendered = render_card(_card(Category.RESEARCH))
+
+    assert "Почему это важно:" in rendered
+    assert "Источник:" in rendered
+    assert "Теги: исследования" in rendered
+    assert "Открыть материал" in rendered
+    assert "score" not in rendered.casefold()
+    assert "freshness" not in rendered
+
+
+def test_debug_card_exposes_internal_score_only_on_request() -> None:
+    assert "Debug: score" in render_card(_card(Category.AI), debug=True)
+
+
 @pytest.mark.asyncio
 async def test_telegram_adapter_sends_intro_and_one_message_per_card(
     monkeypatch: pytest.MonkeyPatch,

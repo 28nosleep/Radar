@@ -40,6 +40,7 @@ async def test_deterministic_editorial_fallback_is_free_and_stable() -> None:
     assert cards[0].material == material
     assert cards[0].llm_model is None
     assert cards[0].enrichment.post_fit_score == 8
+    assert "freshness" not in cards[0].enrichment.why_important
 
 
 class _SometimesFailingEnricher:

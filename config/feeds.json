@@ -34,5 +34,29 @@
     "reputation": 0.9,
     "enabled": true,
     "default_categories": ["ai", "research"]
+  },
+  {
+    "key": "hacker-news",
+    "name": "Hacker News",
+    "kind": "hacker_news",
+    "feed_url": "https://hacker-news.firebaseio.com/v0",
+    "site_url": "https://news.ycombinator.com/",
+    "collection": "top",
+    "item_limit": 30,
+    "reputation": 0.8,
+    "enabled": true,
+    "default_categories": []
+  },
+  {
+    "key": "arxiv-ai",
+    "name": "arXiv: AI and Robotics",
+    "kind": "arxiv",
+    "feed_url": "https://export.arxiv.org/api/query",
+    "site_url": "https://arxiv.org/",
+    "item_limit": 30,
+    "arxiv_categories": ["cs.AI", "cs.LG", "cs.CL", "cs.CV", "cs.RO", "eess.SY"],
+    "reputation": 0.95,
+    "enabled": true,
+    "default_categories": ["research"]
   }
 ]

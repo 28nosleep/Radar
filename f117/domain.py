@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
@@ -31,6 +31,10 @@ class FeedSource(BaseModel):
     reputation: float = Field(default=0.5, ge=0.0, le=1.0)
     enabled: bool = True
     default_categories: list[Category] = Field(default_factory=list)
+    kind: Literal["rss", "hacker_news", "arxiv"] = "rss"
+    collection: Literal["top", "new", "best"] = "top"
+    item_limit: int = Field(default=30, ge=1, le=100)
+    arxiv_categories: list[str] = Field(default_factory=list)
 
 
 class CollectedItem(BaseModel):

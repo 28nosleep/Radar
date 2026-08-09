@@ -59,12 +59,14 @@ class TelegramNotifier:
         chat_id: str,
         api_base: str = "https://api.telegram.org",
         timeout_seconds: float = 20.0,
+        debug: bool = False,
     ) -> None:
         if not chat_id.isdigit() or int(chat_id) <= 0:
             raise ValueError("F117_TELEGRAM_CHAT_ID must be a positive numeric private-chat ID")
         self.url = f"{api_base.rstrip('/')}/bot{bot_token}/sendMessage"
         self.chat_id = chat_id
         self.timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+        self.debug = debug
 
     async def send(
         self,
@@ -77,16 +79,13 @@ class TelegramNotifier:
         receipts: list[DeliveryReceipt] = []
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
             await self._send_message(
-                session,
-                f"<b>Radar — Intelligence Engine</b> · {len(cards)} материалов",
-                disable_preview=True,
+                session, f"<b>Radar</b> · {len(cards)} материалов", disable_preview=True
             )
             for section, section_cards in group_cards(cards).items():
-                for index, card in enumerate(section_cards):
-                    prefix = f"<b>{html.escape(section)}</b>\n\n" if index == 0 else ""
+                for card in section_cards:
                     message_id = await self._send_message(
                         session,
-                        prefix + render_card(card),
+                        render_card(card, section=section, debug=self.debug),
                         disable_preview=True,
                         link_url=card.material.url,
                     )
@@ -148,20 +147,26 @@ def group_cards(cards: Sequence[EditorialCard]) -> dict[str, list[EditorialCard]
     return {section: grouped[section] for section in order if grouped[section]}
 
 
-def render_card(card: EditorialCard) -> str:
+def render_card(card: EditorialCard, *, section: str | None = None, debug: bool = False) -> str:
     material = card.material
     enrichment = card.enrichment
-    categories = ", ".join(category.value for category in material.categories)
-    reasons = "; ".join(material.score_reasons[:3])
+    categories = ", ".join(_category_label(category) for category in material.categories)
+    link = html.escape(material.url, quote=True)
     rendered = (
-        f"<b>{_escape_bounded(enrichment.title_ru, 350)}</b>\n"
-        f"Источник: {_escape_bounded(material.source_name, 160)}\n"
-        f"Оценка: <b>{material.score:.1f}/100</b> · пост {enrichment.post_fit_score}/10\n"
-        f"Категории: {_escape_bounded(categories or Category.OTHER.value, 160)}\n\n"
+        f"<b>{_escape_bounded(section or _section_for(card), 80)}</b>\n"
+        f"<b>{_escape_bounded(enrichment.title_ru, 350)}</b>\n\n"
         f"{_escape_bounded(enrichment.summary_ru, 1200)}\n\n"
-        f"<b>Почему важно:</b> {_escape_bounded(enrichment.why_important, 600)}\n"
-        f"<i>{_escape_bounded(reasons, 400)}</i>"
+        f"<b>Почему это важно:</b> {_escape_bounded(enrichment.why_important, 600)}\n\n"
+        f"Источник: {_escape_bounded(material.source_name, 160)}\n"
+        f"Теги: {_escape_bounded(categories or _category_label(Category.OTHER), 160)}\n"
+        f'<a href="{link}">Открыть материал</a>'
     )
+    if debug:
+        reasons = "; ".join(material.score_reasons[:3])
+        rendered += (
+            f"\n\n<i>Debug: score {material.score:.1f}/100 · "
+            f"post {enrichment.post_fit_score}/10\n{_escape_bounded(reasons, 500)}</i>"
+        )
     if len(rendered) > TELEGRAM_TEXT_LIMIT:
         raise ValueError("Rendered Telegram card exceeds the safe text budget")
     return rendered
@@ -173,8 +178,10 @@ def render_digest(cards: Sequence[EditorialCard]) -> str:
         chunks.append(f"\n{section}")
         for card in section_cards:
             chunks.append(
-                f"- {card.enrichment.title_ru} [{card.material.score:.1f}]\n"
+                f"- {card.enrichment.title_ru}\n"
                 f"  {card.enrichment.summary_ru}\n"
+                f"  Почему это важно: {card.enrichment.why_important}\n"
+                f"  Источник: {card.material.source_name}\n"
                 f"  {card.material.url}"
             )
     return "\n".join(chunks)
@@ -213,3 +220,18 @@ def _escape_bounded(value: str, budget: int) -> str:
         else:
             high = midpoint - 1
     return html.escape(value[:low].rstrip()) + "…"
+
+
+def _category_label(category: Category) -> str:
+    return {
+        Category.AI: "ИИ",
+        Category.LLM: "языковые модели",
+        Category.ROBOTICS: "роботы",
+        Category.RESEARCH: "исследования",
+        Category.OPEN_SOURCE: "открытый код",
+        Category.HARDWARE: "оборудование",
+        Category.BRAIN_INTERFACE: "нейроинтерфейсы",
+        Category.FUNNY: "смешное",
+        Category.WTF: "необычное",
+        Category.OTHER: "другое",
+    }[category]

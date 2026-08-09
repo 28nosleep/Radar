@@ -25,14 +25,14 @@ logger = logging.getLogger(__name__)
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="radar",
-        description="Radar — personal RSS intelligence digest",
+        description="Radar — personal intelligence digest",
     )
     parser.add_argument("--version", action="version", version=__version__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("run-once", help="run one complete RSS-to-Telegram cycle")
+    subparsers.add_parser("run-once", help="run one complete source-to-Telegram cycle")
     subparsers.add_parser("scheduler", help="run immediately and then on an interval")
     subparsers.add_parser("status", help="print compact database counters")
-    subparsers.add_parser("validate-config", help="validate .env and the RSS catalog")
+    subparsers.add_parser("validate-config", help="validate .env and the source catalog")
     return parser
 
 
@@ -51,7 +51,7 @@ def main() -> None:
             json.dumps(
                 {
                     "status": "ok",
-                    "enabled_rss_sources": sum(source.enabled for source in sources),
+                    "enabled_sources": sum(source.enabled for source in sources),
                     "dry_run": settings.dry_run,
                     "openai_enabled": settings.openai_enabled,
                     "telegram_enabled": settings.telegram_enabled,

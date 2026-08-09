@@ -324,6 +324,79 @@ async def test_vertical_slice_deduplicates_selects_top_n_and_reuses_llm_cache(
 
 
 @pytest.mark.asyncio
+async def test_pipeline_accepts_hacker_news_and_arxiv_sources_without_network(
+    tmp_path: Path,
+) -> None:
+    catalog = tmp_path / "m2-sources.json"
+    catalog.write_text(
+        json.dumps(
+            [
+                {
+                    "key": "hacker-news",
+                    "name": "Hacker News",
+                    "kind": "hacker_news",
+                    "feed_url": "https://hacker-news.firebaseio.com/v0",
+                    "default_categories": [],
+                },
+                {
+                    "key": "arxiv-ai",
+                    "name": "arXiv",
+                    "kind": "arxiv",
+                    "feed_url": "https://export.arxiv.org/api/query",
+                    "arxiv_categories": ["cs.AI"],
+                    "default_categories": ["research"],
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    settings = Settings(_env_file=None, rss_catalog_path=catalog, digest_top_n=2, dry_run=True)
+    repository = _MemoryRepository()
+    service = DigestService(
+        settings=settings,
+        repository=repository,  # type: ignore[arg-type]
+        collector=_Collector(
+            {
+                "hacker-news": [
+                    _item(
+                        "hacker-news",
+                        "42",
+                        "Open-source AI model takes Hacker News",
+                        "https://example.com/model",
+                        reputation=0.8,
+                    ).model_copy(update={"popularity": {"points": 900.0, "comments": 100.0}})
+                ],
+                "arxiv-ai": [
+                    _item(
+                        "arxiv-ai",
+                        "2608.01234",
+                        "Research on robots learning manipulation",
+                        "https://arxiv.org/abs/2608.01234",
+                        reputation=0.95,
+                    ).model_copy(update={"source_categories": [Category.RESEARCH]})
+                ],
+            }
+        ),  # type: ignore[arg-type]
+        enricher=_CountingEnricher(),
+        notifier=_Notifier(),
+    )
+
+    summary = await service.run_once()
+
+    assert summary.collected_count == 2
+    assert summary.inserted_count == 2
+    assert summary.selected_count == 2
+    assert {material.item.source_key for material in repository.materials} == {
+        "hacker-news",
+        "arxiv-ai",
+    }
+    arxiv_material = next(
+        item for item in repository.materials if item.item.source_key == "arxiv-ai"
+    )
+    assert Category.RESEARCH in arxiv_material.item.categories
+
+
+@pytest.mark.asyncio
 async def test_real_run_records_telegram_delivery(tmp_path: Path) -> None:
     settings = _settings(tmp_path, dry_run=False)
     repository = _MemoryRepository()

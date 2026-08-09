@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from f117.adapters.arxiv import ArxivCollector
+from f117.adapters.collectors import SourceCollector
+from f117.adapters.hacker_news import HackerNewsCollector
 from f117.adapters.openai_editorial import (
     DeterministicEditorialEnricher,
     EditorialEnricher,
@@ -25,11 +28,11 @@ def validate_settings(settings: Settings) -> None:
     try:
         sources = settings.load_feed_sources()
     except (OSError, ValueError) as exc:
-        errors.append(f"RSS catalog cannot be loaded: {exc}")
+        errors.append(f"Source catalog cannot be loaded: {exc}")
         sources = []
     enabled_sources = [source for source in sources if source.enabled]
     if not enabled_sources:
-        errors.append("RSS catalog must contain at least one enabled source")
+        errors.append("Source catalog must contain at least one enabled source")
     source_keys = [source.key for source in sources]
     if len(source_keys) != len(set(source_keys)):
         errors.append("RSS catalog source keys must be unique")
@@ -46,7 +49,7 @@ def validate_settings(settings: Settings) -> None:
 
     if not settings.dry_run:
         if not settings.openai_enabled:
-            errors.append("OpenAI must be enabled for a real M1 delivery")
+            errors.append("OpenAI must be enabled for a real delivery")
         if not settings.telegram_enabled:
             errors.append("Telegram must be enabled when F117_DRY_RUN=false")
 
@@ -84,12 +87,25 @@ def build_digest_service(settings: Settings, repository: Repository) -> DigestSe
             chat_id=settings.telegram_chat_id,
             api_base=settings.telegram_api_base,
             timeout_seconds=settings.http_timeout_seconds,
+            debug=settings.telegram_format == "debug",
         )
 
-    collector = RSSCollector(
+    rss = RSSCollector(
         timeout_seconds=settings.http_timeout_seconds,
         max_response_bytes=settings.http_max_response_bytes,
         user_agent=settings.http_user_agent,
+    )
+    collector = SourceCollector(
+        rss=rss,
+        hacker_news=HackerNewsCollector(
+            timeout_seconds=settings.http_timeout_seconds,
+            user_agent=settings.http_user_agent,
+        ),
+        arxiv=ArxivCollector(
+            timeout_seconds=settings.http_timeout_seconds,
+            max_response_bytes=settings.http_max_response_bytes,
+            user_agent=settings.http_user_agent,
+        ),
     )
     return DigestService(
         settings=settings,
