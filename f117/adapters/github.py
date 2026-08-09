@@ -37,6 +37,7 @@ class GitHubCollector:
             session = aiohttp.ClientSession(timeout=self.timeout, headers=self.headers)
         try:
             since = (datetime.now(UTC) - timedelta(days=30)).date().isoformat()
+            per_query_limit = max(1, -(-source.item_limit // len(source.github_queries)))
             searches = await asyncio.gather(
                 *(
                     self._json(
@@ -46,19 +47,33 @@ class GitHubCollector:
                             "q": f"{query} created:>={since}",
                             "sort": "updated",
                             "order": "desc",
-                            "per_page": str(source.item_limit),
+                            "per_page": str(per_query_limit),
                         },
                     )
                     for query in source.github_queries
-                )
+                ),
+                return_exceptions=True,
             )
             repositories: dict[int, dict[str, Any]] = {}
-            for payload in searches:
-                if isinstance(payload, dict):
-                    for repo in payload.get("items", []):
-                        if isinstance(repo, dict) and isinstance(repo.get("id"), int):
-                            repositories[repo["id"]] = repo
-            selected = list(repositories.values())[: source.item_limit]
+            ordered_ids: list[int] = []
+            query_items = [
+                payload.get("items", []) if isinstance(payload, dict) else []
+                for payload in searches
+            ]
+            for position in range(per_query_limit):
+                for items in query_items:
+                    if position >= len(items):
+                        continue
+                    repo = items[position]
+                    if isinstance(repo, dict) and isinstance(repo.get("id"), int):
+                        repositories[repo["id"]] = repo
+                        if repo["id"] not in ordered_ids:
+                            ordered_ids.append(repo["id"])
+            if not repositories:
+                raise GitHubFetchError(f"All GitHub searches failed for {source.key}")
+            # Round-robin query result order makes every configured query visible
+            # before any one broad query can fill the source limit.
+            selected = [repositories[repo_id] for repo_id in ordered_ids[: source.item_limit]]
             releases: dict[str, dict[str, Any] | None] = {}
             if source.github_include_releases:
                 release_results = await asyncio.gather(

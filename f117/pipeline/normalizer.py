@@ -70,6 +70,16 @@ _BLOCK_HTML_ELEMENTS = frozenset(
     }
 )
 _WHITESPACE_RE = re.compile(r"\s+")
+_SAFE_HOST_ALIASES = frozenset(
+    {
+        "arxiv.org",
+        "github.com",
+        "news.ycombinator.com",
+        "reddit.com",
+        "www.youtube.com",
+        "youtube.com",
+    }
+)
 
 
 class _TextExtractor(HTMLParser):
@@ -156,8 +166,9 @@ def _remove_tracking_query_parameters(query: str) -> str:
 def normalize_url(value: str) -> str:
     """Canonicalize an HTTP(S) article URL conservatively.
 
-    Path case, trailing slash, query order, and non-tracking parameters are kept
-    because changing any of those can alter the referenced resource.
+    Query order and non-tracking parameters are kept because changing either can
+    alter the referenced resource. A tiny allow-list normalizes known HTTP(S)/www
+    aliases and trailing slashes used by stable content hosts.
     """
 
     raw_url = unescape(value).strip()
@@ -177,6 +188,10 @@ def normalize_url(value: str) -> str:
     except UnicodeError as exc:
         raise ValueError(f"invalid hostname in article URL: {value!r}") from exc
 
+    if hostname.startswith("www.") and hostname[4:] in _SAFE_HOST_ALIASES:
+        hostname = hostname[4:]
+    if hostname in _SAFE_HOST_ALIASES:
+        scheme = "https"
     host_for_netloc = f"[{hostname}]" if ":" in hostname else hostname
     userinfo = ""
     if parsed.username is not None:
@@ -189,6 +204,8 @@ def normalize_url(value: str) -> str:
     port_suffix = "" if port is None or is_default_port else f":{port}"
     netloc = f"{userinfo}{host_for_netloc}{port_suffix}"
     path = parsed.path or "/"
+    if hostname in _SAFE_HOST_ALIASES and path != "/" and path.endswith("/"):
+        path = path.rstrip("/")
     query = _remove_tracking_query_parameters(parsed.query)
     return urlunsplit((scheme, netloc, path, query, ""))
 

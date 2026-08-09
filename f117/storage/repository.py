@@ -150,6 +150,18 @@ class Repository:
             rows = (await session.scalars(query)).all()
             return [self._to_stored(row) for row in rows]
 
+    async def material_by_canonical_url(self, canonical_url: str) -> StoredMaterial | None:
+        """Find an exact URL duplicate without applying the fuzzy recency window."""
+
+        async with self.database.session() as session:
+            row = await session.scalar(
+                select(MaterialModel)
+                .where(MaterialModel.canonical_url == canonical_url)
+                .options(selectinload(MaterialModel.source))
+                .order_by(MaterialModel.collected_at.desc())
+            )
+            return self._to_stored(row) if row is not None else None
+
     async def add_material(
         self,
         source_id: UUID,
@@ -164,16 +176,21 @@ class Repository:
             try:
                 should_increment_mentions = False
                 if duplicate_of_id is not None:
-                    existing_source = await session.scalar(
-                        select(MaterialModel.id).where(
-                            MaterialModel.source_id == source_id,
-                            or_(
-                                MaterialModel.id == duplicate_of_id,
-                                MaterialModel.duplicate_of_id == duplicate_of_id,
-                            ),
+                    represented_keys = (
+                        await session.scalars(
+                            select(SourceModel.key)
+                            .join(MaterialModel, MaterialModel.source_id == SourceModel.id)
+                            .where(
+                                or_(
+                                    MaterialModel.id == duplicate_of_id,
+                                    MaterialModel.duplicate_of_id == duplicate_of_id,
+                                )
+                            )
                         )
-                    )
-                    should_increment_mentions = existing_source is None
+                    ).all()
+                    should_increment_mentions = _provider_family(source.key) not in {
+                        _provider_family(key) for key in represented_keys
+                    }
 
                 row = MaterialModel(
                     source=source,
@@ -202,7 +219,7 @@ class Repository:
                         )
                     )
                 await session.flush()
-                if item.popularity:
+                if item.popularity and duplicate_of_id is None:
                     session.add(
                         MetricSnapshotModel(
                             material_id=row.id,
@@ -210,6 +227,8 @@ class Repository:
                             metrics=dict(item.popularity),
                         )
                     )
+                if duplicate_of_id is not None:
+                    await self._aggregate_root_metrics(session, duplicate_of_id, datetime.now(UTC))
                 stored = self._to_stored(row)
                 await session.commit()
                 return stored
@@ -220,7 +239,7 @@ class Repository:
     async def refresh_observation(
         self, source_id: UUID, external_id: str, metrics: dict[str, float]
     ) -> None:
-        """Persist an observation and derived growth atomically for an existing item."""
+        """Persist a metrics-only observation for callers without refreshed content."""
 
         if not metrics:
             return
@@ -233,21 +252,99 @@ class Repository:
             )
             if row is None:
                 return
+            await self._record_metrics(session, row, metrics, captured_at)
+            await session.commit()
+
+    async def refresh_material(self, source_id: UUID, item: NormalizedItem) -> None:
+        """Refresh mutable content and metrics for a repeated source/external item."""
+
+        captured_at = datetime.now(UTC)
+        async with self.database.session() as session:
+            row = await session.scalar(
+                select(MaterialModel).where(
+                    MaterialModel.source_id == source_id,
+                    MaterialModel.external_id == item.external_id,
+                )
+            )
+            if row is None:
+                return
+            content_changed = row.content_hash != item.content_hash
+            values = {
+                "title": item.title,
+                "url": item.url,
+                "canonical_url": item.canonical_url,
+                "published_at": item.published_at,
+                "collected_at": item.collected_at,
+                "description": item.description,
+                "author": item.author,
+                "content_hash": item.content_hash,
+                "normalized_title": item.normalized_title,
+            }
+            for key, value in values.items():
+                if getattr(row, key) != value:
+                    setattr(row, key, value)
+            if content_changed:
+                row.categories = [category.value for category in item.categories]
+            await self._record_metrics(session, row, item.popularity, captured_at)
+            await session.commit()
+
+    async def _record_metrics(
+        self,
+        session: Any,
+        row: MaterialModel,
+        metrics: dict[str, float],
+        captured_at: datetime,
+    ) -> None:
+        if not metrics:
+            return
+        root_id = row.duplicate_of_id or row.id
+        if root_id == row.id:
             previous = await session.scalar(
                 select(MetricSnapshotModel)
                 .where(MetricSnapshotModel.material_id == row.id)
                 .order_by(MetricSnapshotModel.captured_at.desc())
                 .limit(1)
             )
-            updated_metrics = _with_growth(metrics, previous, captured_at)
-            row.popularity = updated_metrics
+            row.popularity = _with_growth(metrics, previous, captured_at)
             row.last_signal_at = captured_at
             session.add(
                 MetricSnapshotModel(
                     material_id=row.id, captured_at=captured_at, metrics=dict(metrics)
                 )
             )
-            await session.commit()
+            return
+        row.popularity = dict(metrics)
+        row.last_signal_at = captured_at
+        session.add(
+            MetricSnapshotModel(material_id=row.id, captured_at=captured_at, metrics=dict(metrics))
+        )
+        await self._aggregate_root_metrics(session, root_id, captured_at)
+
+    async def _aggregate_root_metrics(
+        self, session: Any, root_id: UUID, captured_at: datetime
+    ) -> None:
+        root = await session.get(MaterialModel, root_id)
+        if root is None:
+            return
+        rows = (
+            await session.scalars(
+                select(MaterialModel).where(
+                    or_(MaterialModel.id == root_id, MaterialModel.duplicate_of_id == root_id)
+                )
+            )
+        ).all()
+        aggregate = _aggregate_metrics([row.popularity for row in rows])
+        previous = await session.scalar(
+            select(MetricSnapshotModel)
+            .where(MetricSnapshotModel.material_id == root_id)
+            .order_by(MetricSnapshotModel.captured_at.desc())
+            .limit(1)
+        )
+        root.popularity = _with_growth(aggregate, previous, captured_at)
+        root.last_signal_at = captured_at
+        session.add(
+            MetricSnapshotModel(material_id=root_id, captured_at=captured_at, metrics=aggregate)
+        )
 
     async def metric_history(self, material_id: UUID) -> list[MetricSnapshot]:
         async with self.database.session() as session:
@@ -675,13 +772,38 @@ class Repository:
 
 _GROWTH_METRIC_KEYS = (
     "github_stars",
+    "hn_comments",
+    "hn_points",
+    "reddit_comments",
     "reddit_upvotes",
+    "youtube_likes",
     "youtube_views",
     "points",
     "views",
     "stars",
     "upvotes",
 )
+_DERIVED_METRIC_SUFFIXES = ("_per_hour",)
+_DERIVED_METRIC_KEYS = frozenset(
+    {"growth_absolute", "growth_percent", "growth_per_hour", "growth_window_hours"}
+)
+
+
+def _provider_family(source_key: str) -> str:
+    return "reddit" if source_key.startswith("reddit-") else source_key
+
+
+def _aggregate_metrics(metric_sets: list[dict[str, float]]) -> dict[str, float]:
+    """Keep the strongest observation per provider metric without crosspost sums."""
+
+    aggregate: dict[str, float] = {}
+    for metrics in metric_sets:
+        for key, value in metrics.items():
+            if key in _DERIVED_METRIC_KEYS or key.endswith(_DERIVED_METRIC_SUFFIXES):
+                continue
+            numeric = float(value)
+            aggregate[key] = max(aggregate.get(key, numeric), numeric)
+    return aggregate
 
 
 def _with_growth(
@@ -693,6 +815,9 @@ def _with_growth(
     elapsed_hours = (captured_at - previous.captured_at).total_seconds() / 3600.0
     if elapsed_hours <= 0:
         return result
+    best_rate = 0.0
+    best_absolute = 0.0
+    best_percent = 0.0
     for key in _GROWTH_METRIC_KEYS:
         if key not in metrics or key not in previous.metrics:
             continue
@@ -701,13 +826,25 @@ def _with_growth(
             continue
         baseline = float(previous.metrics[key])
         percent = (absolute / baseline * 100.0) if baseline > 0 else 0.0
+        rate = absolute / elapsed_hours
         result.update(
             {
-                "growth_absolute": round(absolute, 2),
-                "growth_percent": round(percent, 2),
-                "growth_per_hour": round(percent / elapsed_hours, 2),
+                f"{key}_absolute": round(absolute, 2),
+                f"{key}_percent": round(percent, 2),
+                f"{key}_per_hour": round(rate, 2),
+            }
+        )
+        if rate > best_rate:
+            best_rate = rate
+            best_absolute = absolute
+            best_percent = percent
+    if best_rate > 0:
+        result.update(
+            {
+                "growth_absolute": round(best_absolute, 2),
+                "growth_percent": round(best_percent, 2),
+                "growth_per_hour": round(best_rate, 2),
                 "growth_window_hours": round(elapsed_hours, 2),
             }
         )
-        return result
     return result

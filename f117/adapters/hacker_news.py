@@ -42,7 +42,8 @@ class HackerNewsCollector:
                 story_id for story_id in listing[: source.item_limit] if isinstance(story_id, int)
             ]
             stories = await asyncio.gather(
-                *(self._json(session, f"{base}/item/{story_id}.json") for story_id in story_ids)
+                *(self._json(session, f"{base}/item/{story_id}.json") for story_id in story_ids),
+                return_exceptions=True,
             )
             collected_at = datetime.now(UTC)
             items = [
@@ -92,8 +93,8 @@ class HackerNewsCollector:
             author=str(story.get("by") or "").strip() or None,
             source_categories=source.default_categories,
             popularity={
-                "points": float(story.get("score") or 0),
-                "comments": float(story.get("descendants") or 0),
+                "hn_points": float(story.get("score") or 0),
+                "hn_comments": float(story.get("descendants") or 0),
             },
             raw={"hn_id": story_id, "hn_listing": source.collection},
         )

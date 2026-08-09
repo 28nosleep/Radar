@@ -119,3 +119,19 @@ def test_default_topic_and_unusualness_use_categories() -> None:
 def test_invalid_explicit_signal_is_rejected() -> None:
     with pytest.raises(ValueError, match="novelty"):
         RankingSignals(novelty=1.1)
+
+
+def test_popular_irrelevant_hacker_news_item_cannot_win_on_popularity_alone() -> None:
+    irrelevant = score_material(
+        _material(
+            item_updates={
+                "source_name": "Hacker News",
+                "categories": [Category.OTHER],
+                "popularity": {"hn_points": 10_000, "hn_comments": 2_000},
+            }
+        ),
+        now=NOW,
+    )
+    relevant = score_material(_material(), now=NOW)
+
+    assert relevant.score > irrelevant.score

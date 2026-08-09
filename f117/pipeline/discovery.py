@@ -9,15 +9,31 @@ from math import log1p
 
 from f117.domain import MetricSnapshot, StoredMaterial
 
-_METRIC_KEYS = (
-    "github_stars",
-    "reddit_upvotes",
-    "youtube_views",
-    "points",
-    "views",
-    "stars",
-    "upvotes",
-)
+
+@dataclass(frozen=True, slots=True)
+class MetricProfile:
+    min_baseline: float
+    min_absolute: float
+    min_rate_per_hour: float
+    saturation_absolute: float
+    saturation_rate_per_hour: float
+
+
+# Metrics are intentionally not interchangeable: a 10-star GitHub jump and a
+# 10-view YouTube jump do not mean the same thing. Legacy generic keys remain so
+# old rows keep a conservative interpretation after the migration-free upgrade.
+METRIC_PROFILES: dict[str, MetricProfile] = {
+    "github_stars": MetricProfile(25, 10, 2, 250, 50),
+    "youtube_views": MetricProfile(1_000, 250, 50, 50_000, 10_000),
+    "hn_points": MetricProfile(20, 10, 3, 250, 50),
+    "hn_comments": MetricProfile(5, 3, 1, 75, 15),
+    "reddit_upvotes": MetricProfile(20, 10, 3, 250, 50),
+    "reddit_comments": MetricProfile(5, 3, 1, 75, 15),
+    "points": MetricProfile(20, 10, 3, 250, 50),
+    "comments": MetricProfile(5, 3, 1, 75, 15),
+    "stars": MetricProfile(25, 10, 2, 250, 50),
+    "youtube_likes": MetricProfile(50, 20, 5, 2_000, 300),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +67,14 @@ class DiscoveryAssessment:
     hidden_gem: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _GrowthSignal:
+    value: float
+    rate: float
+    reason: str
+    corrected: bool = False
+
+
 def assess_discovery(
     material: StoredMaterial,
     history: list[MetricSnapshot],
@@ -58,7 +82,7 @@ def assess_discovery(
     now: datetime,
     config: DiscoveryConfig,
 ) -> DiscoveryAssessment:
-    """Score only evidence present in snapshots; weak tiny baselines are damped."""
+    """Score the latest metric transition; corrections clear stale rising signals."""
 
     growth, acceleration, growth_reason = _growth_signals(history, config)
     diversity = min(1.0, max(0, material.independent_mentions - 1) / 3.0)
@@ -88,46 +112,97 @@ def assess_discovery(
     return DiscoveryAssessment(score=score, reasons=reasons, hidden_gem=hidden_gem)
 
 
+def metric_growth_signal(
+    key: str,
+    before: float,
+    after: float,
+    hours: float,
+    config: DiscoveryConfig,
+) -> _GrowthSignal:
+    """Return one metric's calibrated latest-transition signal.
+
+    Corrections are not growth. A zero baseline can still be meaningful only with
+    a substantial absolute and rate floor; tiny 1→10 changes stay damped.
+    """
+
+    if hours <= 0:
+        return _GrowthSignal(0.0, 0.0, "")
+    if after < before:
+        return _GrowthSignal(0.0, 0.0, f"metric correction: {key}", corrected=True)
+    absolute = after - before
+    profile = METRIC_PROFILES.get(
+        key,
+        MetricProfile(
+            config.min_baseline,
+            config.min_growth_absolute,
+            max(1.0, config.min_growth_absolute / 4),
+            max(1.0, config.min_growth_absolute * 25),
+            max(1.0, config.min_growth_absolute * 5),
+        ),
+    )
+    rate = absolute / hours
+    if absolute < profile.min_absolute or rate < profile.min_rate_per_hour:
+        return _GrowthSignal(0.0, rate, "")
+    baseline_gate = min(1.0, before / profile.min_baseline) if before > 0 else 0.55
+    # Tiny non-zero baselines should not earn a percentage spike by themselves.
+    if 0 < before < profile.min_baseline:
+        baseline_gate *= before / profile.min_baseline
+    absolute_signal = min(1.0, absolute / profile.saturation_absolute)
+    rate_signal = min(1.0, rate / profile.saturation_rate_per_hour)
+    percent_signal = min(1.0, log1p(absolute / max(before, 1.0) * 100) / log1p(300.0))
+    value = min(1.0, (0.45 * absolute_signal + 0.40 * rate_signal + 0.15 * percent_signal))
+    value *= max(0.2, baseline_gate)
+    return _GrowthSignal(
+        round(value, 6),
+        rate,
+        f"growth: {key} +{absolute:.0f} over {hours:.1f}h ({rate:.1f}/h)",
+    )
+
+
 def _growth_signals(
     history: list[MetricSnapshot], config: DiscoveryConfig
 ) -> tuple[float, float, str]:
     if len(history) < 2:
         return 0.0, 0.0, ""
-    pairs: list[tuple[float, float, float, float]] = []
-    for left, right in pairwise(history):
-        primary = _shared_primary(left.metrics, right.metrics)
-        if primary is None:
-            continue
-        before, after = primary
-        hours = (right.captured_at - left.captured_at).total_seconds() / 3600.0
-        if hours > 0 and after >= before:
-            pairs.append((before, after, hours, (after - before) / hours))
-    if not pairs:
+    latest_left, latest_right = history[-2], history[-1]
+    hours = (latest_right.captured_at - latest_left.captured_at).total_seconds() / 3600.0
+    latest = _best_pair_signal(latest_left.metrics, latest_right.metrics, hours, config)
+    if latest.corrected:
+        return 0.0, 0.0, latest.reason
+    if latest.value == 0:
         return 0.0, 0.0, ""
-    before, after, hours, rate = pairs[-1]
-    absolute = after - before
-    if before < config.min_baseline or absolute < config.min_growth_absolute:
-        return 0.0, 0.0, ""
-    percent = absolute / before * 100.0
-    baseline_gate = min(1.0, before / config.min_baseline)
-    absolute_gate = min(1.0, absolute / max(config.min_growth_absolute * 10.0, 1.0))
-    growth = min(1.0, log1p(percent) / log1p(300.0)) * baseline_gate * absolute_gate
+
+    previous_rates: list[float] = []
+    for left, right in pairwise(history[:-1]):
+        pair_hours = (right.captured_at - left.captured_at).total_seconds() / 3600.0
+        signal = _best_pair_signal(left.metrics, right.metrics, pair_hours, config)
+        if signal.value > 0:
+            previous_rates.append(signal.rate)
     acceleration = 0.0
-    if len(pairs) >= 2 and pairs[-2][3] > 0:
-        acceleration = min(1.0, max(0.0, rate / pairs[-2][3] - 1.0))
-    return growth, acceleration, f"growth: +{percent:.0f}% over {hours:.1f}h"
+    if previous_rates and previous_rates[-1] > 0:
+        acceleration = min(1.0, max(0.0, latest.rate / previous_rates[-1] - 1.0))
+    return latest.value, acceleration, latest.reason
+
+
+def _best_pair_signal(
+    left: dict[str, float], right: dict[str, float], hours: float, config: DiscoveryConfig
+) -> _GrowthSignal:
+    signals = [
+        metric_growth_signal(key, float(left[key]), float(right[key]), hours, config)
+        for key in METRIC_PROFILES
+        if key in left and key in right
+    ]
+    if not signals:
+        return _GrowthSignal(0.0, 0.0, "")
+    corrections = [signal for signal in signals if signal.corrected]
+    if corrections:
+        return corrections[0]
+    return max(signals, key=lambda signal: signal.value)
 
 
 def _primary_metric(metrics: dict[str, float]) -> tuple[str, float] | None:
-    for key in _METRIC_KEYS:
+    for key in METRIC_PROFILES:
         value = metrics.get(key)
         if value is not None:
             return key, float(value)
-    return None
-
-
-def _shared_primary(left: dict[str, float], right: dict[str, float]) -> tuple[float, float] | None:
-    for key in _METRIC_KEYS:
-        if key in left and key in right:
-            return float(left[key]), float(right[key])
     return None

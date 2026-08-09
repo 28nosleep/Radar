@@ -49,3 +49,15 @@ def test_diversity_never_discards_a_strong_material() -> None:
     )
 
     assert result == materials
+
+
+def test_diversity_does_not_replace_a_clear_winner_with_weak_filler() -> None:
+    materials = [
+        _material("OpenAI release", source="OpenAI Blog", score=82),
+        _material("OpenAI technical report", source="OpenAI Blog", score=78),
+        _material("Weak filler", source="Other", score=45),
+    ]
+
+    result = diversify(materials, config=DiversityConfig(max_per_source=1, close_score_gap=8))
+
+    assert result[:2] == materials[:2]

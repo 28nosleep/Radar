@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import pytest
+
 from f117.domain import NormalizedItem, StoredMaterial
 from f117.pipeline.deduplicator import (
     find_duplicate,
@@ -135,3 +137,35 @@ def test_find_duplicate_returns_strongest_match_not_first_match() -> None:
 
     assert result is not None
     assert result.id == UUID(int=2)
+
+
+@pytest.mark.parametrize(
+    ("first_title", "second_title"),
+    [
+        ("Model is not available in Europe", "Model is available in Europe"),
+        ("Startup reports 90% faster inference", "Startup reports 30% faster inference"),
+        ("Project releases version 2.0", "Project releases version 3.0"),
+        ("Project raises funding round", "Project releases a new version"),
+    ],
+)
+def test_conflicting_facts_never_fuzzy_merge(first_title: str, second_title: str) -> None:
+    first = _item(title=first_title, canonical_url="https://one.example/project")
+    second = _item(
+        title=second_title,
+        canonical_url="https://two.example/project",
+        source_key="source-b",
+        external_id="2",
+    )
+
+    assert not is_probable_duplicate(first, second)
+
+
+def test_same_project_url_with_distinct_events_is_not_merged() -> None:
+    first = _item(title="Acme project releases version 2.0")
+    second = _item(
+        title="Acme project raises funding round",
+        source_key="source-b",
+        external_id="2",
+    )
+
+    assert not is_probable_duplicate(first, second)

@@ -38,24 +38,37 @@ class YouTubeCollector:
         if session is None:
             session = aiohttp.ClientSession(timeout=self.timeout, headers=self.headers)
         try:
-            video_ids: set[str] = set()
+            video_ids: list[str] = []
+            seen_ids: set[str] = set()
             for channel_id in source.youtube_channel_ids:
-                video_ids.update(await self._search(session, {"channelId": channel_id}))
+                for video_id in await self._search(session, {"channelId": channel_id}):
+                    if video_id not in seen_ids:
+                        seen_ids.add(video_id)
+                        video_ids.append(video_id)
             for query in source.youtube_queries:
-                video_ids.update(await self._search(session, {"q": query}))
+                for video_id in await self._search(session, {"q": query}):
+                    if video_id not in seen_ids:
+                        seen_ids.add(video_id)
+                        video_ids.append(video_id)
             videos = (
                 await self._json(
                     session,
                     "videos",
                     {
-                        "id": ",".join(sorted(video_ids)[: source.item_limit]),
+                        "id": ",".join(video_ids[: source.item_limit]),
                         "part": "snippet,statistics",
                     },
                 )
                 if video_ids
                 else {"items": []}
             )
-            items = videos.get("items", []) if isinstance(videos, dict) else []
+            raw_items = videos.get("items", []) if isinstance(videos, dict) else []
+            by_id = {
+                str(video.get("id")): video
+                for video in raw_items
+                if isinstance(video, dict) and isinstance(video.get("id"), str)
+            }
+            items = [by_id[video_id] for video_id in video_ids if video_id in by_id]
             collected_at = datetime.now(UTC)
             return FeedFetchResult(
                 items=[
@@ -72,18 +85,18 @@ class YouTubeCollector:
             if owns_session:
                 await session.close()
 
-    async def _search(self, session: aiohttp.ClientSession, extra: dict[str, str]) -> set[str]:
+    async def _search(self, session: aiohttp.ClientSession, extra: dict[str, str]) -> list[str]:
         payload = await self._json(
             session,
             "search",
             {"part": "snippet", "type": "video", "order": "date", "maxResults": "50", **extra},
         )
         items = payload.get("items", []) if isinstance(payload, dict) else []
-        return {
+        return [
             str(item.get("id", {}).get("videoId"))
             for item in items
             if isinstance(item, dict) and item.get("id", {}).get("videoId")
-        }
+        ]
 
     async def _json(
         self, session: aiohttp.ClientSession, endpoint: str, params: dict[str, str]

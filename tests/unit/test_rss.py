@@ -120,3 +120,20 @@ async def test_fetch_reports_malformed_feed_without_entries() -> None:
 
     with pytest.raises(RSSFetchError, match="Malformed feed"):
         await RSSCollector(timeout_seconds=2).fetch(_source(), session=cast(Any, session))
+
+
+@pytest.mark.asyncio
+async def test_item_limit_marks_feed_partial_so_checkpoint_can_stay_put() -> None:
+    two_entries = ATOM.replace(
+        b"</feed>",
+        b"""<entry><title>Second AI item</title><id>entry-2</id>
+        <link href=\"https://example.com/second\" /><updated>2026-08-06T10:30:00Z</updated>
+        </entry></feed>""",
+    )
+    source = _source().model_copy(update={"item_limit": 1})
+    result = await RSSCollector(timeout_seconds=2).fetch(
+        source, session=cast(Any, _Session([_Response(two_entries)]))
+    )
+
+    assert [item.external_id for item in result.items] == ["entry-1"]
+    assert result.partial is True

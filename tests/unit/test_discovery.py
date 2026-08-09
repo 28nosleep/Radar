@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
+
 from f117.domain import Category, MetricSnapshot, NormalizedItem, StoredMaterial
 from f117.pipeline.discovery import DiscoveryConfig, assess_discovery
 
@@ -104,3 +106,57 @@ def test_acceleration_requires_three_snapshots() -> None:
     )
 
     assert three.score > two.score
+
+
+@pytest.mark.parametrize(
+    ("metric", "values", "hours", "expects_growth"),
+    [
+        ("github_stars", [1, 10], [1], False),
+        ("github_stars", [0, 500], [1], True),
+        ("github_stars", [100, 500, 100], [1, 1], False),
+        ("github_stars", [100, 200], [1], True),
+        ("youtube_views", [100, 200], [1], False),
+    ],
+)
+def test_discovery_edge_cases_use_metric_specific_floors(
+    metric: str, values: list[float], hours: list[int], expects_growth: bool
+) -> None:
+    now = datetime.now(UTC)
+    captured = [now - timedelta(hours=sum(hours))]
+    for interval in hours:
+        captured.append(captured[-1] + timedelta(hours=interval))
+    assessment = assess_discovery(
+        _material(stars=values[-1]),
+        [
+            MetricSnapshot(captured_at=at, metrics={metric: value})
+            for at, value in zip(captured, values, strict=True)
+        ],
+        now=now,
+        config=_config(),
+    )
+
+    assert any(reason.startswith("growth:") for reason in assessment.reasons) is expects_growth
+
+
+def test_same_percentage_growth_is_lower_over_longer_interval() -> None:
+    now = datetime.now(UTC)
+    fast = assess_discovery(
+        _material(stars=200),
+        [
+            MetricSnapshot(captured_at=now - timedelta(hours=1), metrics={"github_stars": 100}),
+            MetricSnapshot(captured_at=now, metrics={"github_stars": 200}),
+        ],
+        now=now,
+        config=_config(),
+    )
+    slow = assess_discovery(
+        _material(stars=200),
+        [
+            MetricSnapshot(captured_at=now - timedelta(hours=23), metrics={"github_stars": 100}),
+            MetricSnapshot(captured_at=now, metrics={"github_stars": 200}),
+        ],
+        now=now,
+        config=_config(),
+    )
+
+    assert fast.score > slow.score

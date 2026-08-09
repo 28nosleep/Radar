@@ -16,8 +16,9 @@ def test_growth_is_calculated_from_two_metric_snapshots() -> None:
 
     assert result["growth_absolute"] == 300.0
     assert result["growth_percent"] == 250.0
-    assert result["growth_per_hour"] == 62.5
+    assert result["growth_per_hour"] == 75.0
     assert result["growth_window_hours"] == 4.0
+    assert result["github_stars_per_hour"] == 75.0
 
 
 def test_first_snapshot_has_no_growth() -> None:

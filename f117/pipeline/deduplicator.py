@@ -14,6 +14,24 @@ DEFAULT_TITLE_SIMILARITY_THRESHOLD = 0.92
 DEFAULT_FUZZY_TIME_WINDOW = timedelta(days=3)
 DEFAULT_EXACT_TIME_WINDOW = timedelta(days=7)
 _TOKEN_RE = re.compile(r"[\w]+", re.UNICODE)
+_NUMBER_RE = re.compile(r"(?<!\w)(?:v?\d+(?:\.\d+){0,3}|\d+(?:\.\d+)?%)(?!\w)", re.IGNORECASE)
+_NEGATIONS = frozenset({"not", "no", "without", "never", "не", "нет", "без"})
+_EVENT_MARKERS = frozenset(
+    {
+        "acquires",
+        "acquisition",
+        "funding",
+        "launch",
+        "launches",
+        "raised",
+        "raises",
+        "release",
+        "released",
+        "releases",
+        "update",
+        "version",
+    }
+)
 
 
 def _tokens(title: str) -> list[str]:
@@ -46,6 +64,26 @@ def _within_window(a: NormalizedItem, b: NormalizedItem, window: timedelta) -> b
     return abs(a.published_at - b.published_at) <= window
 
 
+def _conflicting_claims(a: NormalizedItem, b: NormalizedItem) -> bool:
+    """Reject close headlines when deterministic facts say they are different."""
+
+    a_title = normalize_title(a.title)
+    b_title = normalize_title(b.title)
+    a_numbers = set(_NUMBER_RE.findall(a_title))
+    b_numbers = set(_NUMBER_RE.findall(b_title))
+    if a_numbers and b_numbers and a_numbers != b_numbers:
+        return True
+    a_tokens = set(_tokens(a_title))
+    b_tokens = set(_tokens(b_title))
+    if bool(a_tokens & _NEGATIONS) != bool(b_tokens & _NEGATIONS):
+        return True
+    # A project home page often keeps the same URL while its release, funding,
+    # and launch announcements are genuinely separate editorial events.
+    a_events = a_tokens & _EVENT_MARKERS
+    b_events = b_tokens & _EVENT_MARKERS
+    return bool(a_events and b_events and a_events != b_events)
+
+
 def duplicate_reason(
     a: NormalizedItem,
     b: NormalizedItem,
@@ -56,8 +94,11 @@ def duplicate_reason(
 
     if a.source_key == b.source_key and a.external_id == b.external_id:
         return "same source and external id"
-    if a.canonical_url == b.canonical_url:
+    if a.canonical_url == b.canonical_url and not _conflicting_claims(a, b):
         return "same canonical URL"
+
+    if _conflicting_claims(a, b):
+        return None
 
     a_tokens = _tokens(a.normalized_title)
     b_tokens = _tokens(b.normalized_title)

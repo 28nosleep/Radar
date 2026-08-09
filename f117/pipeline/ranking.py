@@ -44,7 +44,8 @@ class RankingConfig:
     funny_unusualness: float = 0.70
     wtf_unusualness: float = 0.90
     default_topic_fit: float = 0.75
-    other_topic_fit: float = 0.25
+    other_topic_fit: float = 0.08
+    other_popularity_cap: float = 0.20
 
     def __post_init__(self) -> None:
         weights = self.weights
@@ -61,6 +62,7 @@ class RankingConfig:
             "wtf_unusualness",
             "default_topic_fit",
             "other_topic_fit",
+            "other_popularity_cap",
         ):
             value = getattr(self, name)
             if not 0.0 <= value <= 1.0:
@@ -83,6 +85,8 @@ class RankingConfig:
 _POPULARITY_TARGETS: Mapping[str, float] = {
     "comments": 500.0,
     "github_stars": 5_000.0,
+    "hn_comments": 500.0,
+    "hn_points": 1_000.0,
     "likes": 100_000.0,
     "points": 1_000.0,
     "reddit_comments": 500.0,
@@ -95,14 +99,16 @@ _POPULARITY_TARGETS: Mapping[str, float] = {
 }
 _GROWTH_TARGETS: Mapping[str, float] = {
     "comments_per_hour": 50.0,
-    "github_stars_per_hour": 500.0,
-    "stars_per_hour": 500.0,
-    "upvotes_per_hour": 100.0,
-    "views_per_hour": 100_000.0,
-    "youtube_views_per_hour": 100_000.0,
+    "github_stars_per_hour": 50.0,
+    "hn_comments_per_hour": 50.0,
+    "hn_points_per_hour": 50.0,
+    "stars_per_hour": 50.0,
+    "upvotes_per_hour": 50.0,
+    "views_per_hour": 10_000.0,
+    "youtube_views_per_hour": 10_000.0,
     "growth_per_hour": 25.0,
-    "reddit_upvotes_per_hour": 100.0,
-    "reddit_comments_per_hour": 50.0,
+    "reddit_upvotes_per_hour": 50.0,
+    "reddit_comments_per_hour": 15.0,
 }
 
 
@@ -149,9 +155,13 @@ def _mentions_signal(mentions: int, full_mentions: int) -> float:
 
 
 def _default_topic_fit(categories: list[Category], config: RankingConfig) -> float:
-    if not categories or set(categories) == {Category.OTHER}:
+    if _is_other_only(categories):
         return config.other_topic_fit
     return config.default_topic_fit
+
+
+def _is_other_only(categories: list[Category]) -> bool:
+    return not categories or set(categories) == {Category.OTHER}
 
 
 def _default_unusualness(categories: list[Category], config: RankingConfig) -> float:
@@ -191,6 +201,8 @@ def score_material(
             targets=_POPULARITY_TARGETS,
         ),
     )
+    if _is_other_only(material.item.categories):
+        popularity = min(popularity, config.other_popularity_cap)
     growth = _signal_or_default(
         signals.growth,
         _metric_signal(

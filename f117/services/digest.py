@@ -20,7 +20,7 @@ from f117.adapters.telegram import (
 from f117.config import Settings
 from f117.domain import EditorialCard, RankedMaterial, StoredMaterial
 from f117.pipeline.classifier import classify_item
-from f117.pipeline.deduplicator import find_duplicate
+from f117.pipeline.deduplicator import duplicate_reason, find_duplicate
 from f117.pipeline.discovery import DiscoveryConfig, assess_discovery
 from f117.pipeline.diversity import DiversityConfig, diversify
 from f117.pipeline.normalizer import normalize_item
@@ -151,15 +151,6 @@ class DigestService:
 
                 counts["collected_count"] += len(source_result.result.items)
                 for collected in source_result.result.items:
-                    if await self.repository.has_material(
-                        source_result.state.id, collected.external_id
-                    ):
-                        await self.repository.refresh_observation(
-                            source_result.state.id,
-                            collected.external_id,
-                            dict(collected.popularity),
-                        )
-                        continue
                     try:
                         normalized = classify_item(normalize_item(collected))
                     except (TypeError, ValueError) as exc:
@@ -171,11 +162,26 @@ class DigestService:
                         )
                         continue
 
-                    duplicate = find_duplicate(
-                        normalized,
-                        recent,
-                        threshold=self.settings.dedup_title_threshold,
+                    if await self.repository.has_material(
+                        source_result.state.id, normalized.external_id
+                    ):
+                        await self.repository.refresh_material(source_result.state.id, normalized)
+                        continue
+
+                    duplicate = await self.repository.material_by_canonical_url(
+                        normalized.canonical_url
                     )
+                    if (
+                        duplicate is not None
+                        and duplicate_reason(normalized, duplicate.item) is None
+                    ):
+                        duplicate = None
+                    if duplicate is None:
+                        duplicate = find_duplicate(
+                            normalized,
+                            recent,
+                            threshold=self.settings.dedup_title_threshold,
+                        )
                     duplicate_of_id: UUID | None = None
                     if duplicate is not None:
                         duplicate_of_id = duplicate.duplicate_of_id or duplicate.id
@@ -191,10 +197,21 @@ class DigestService:
 
                 # Persist the conditional-fetch checkpoint only after every item
                 # in this response has been durably accepted or rejected.
+                # A capped RSS feed has intentionally left entries unprocessed;
+                # retaining the old checkpoint prevents an ETag advance from
+                # making those entries unreachable on the next fetch.
                 await self.repository.record_source_result(
                     source_result.state.id,
-                    etag=source_result.result.etag,
-                    last_modified=source_result.result.last_modified,
+                    etag=(
+                        source_result.state.etag
+                        if source_result.result.partial
+                        else source_result.result.etag
+                    ),
+                    last_modified=(
+                        source_result.state.last_modified
+                        if source_result.result.partial
+                        else source_result.result.last_modified
+                    ),
                     success=True,
                 )
 
@@ -244,6 +261,7 @@ class DigestService:
                     max_per_entity=self.settings.diversity_max_per_entity,
                     max_per_category=self.settings.diversity_max_per_category,
                     strong_score_threshold=self.settings.diversity_strong_score_threshold,
+                    discovery_selection_boost=self.settings.discovery_selection_boost,
                 ),
             )
             counts["selected_count"] = len(selected)

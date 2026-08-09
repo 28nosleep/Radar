@@ -139,6 +139,7 @@ def _popularity_total(popularity: dict[str, float]) -> float:
         for key, value in popularity.items()
         if key
         not in {"growth_absolute", "growth_percent", "growth_per_hour", "growth_window_hours"}
+        and not key.endswith(("_absolute", "_percent", "_per_hour"))
     )
 
 

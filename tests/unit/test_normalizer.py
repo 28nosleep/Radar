@@ -40,6 +40,17 @@ def test_normalize_url_preserves_path_case_trailing_slash_and_query_order() -> N
     assert normalize_url(value) == "http://example.com/News/Item/?b=2&a=1&a=3"
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://www.github.com/openai/gpt/",
+        "https://github.com/openai/gpt/?utm_source=rss",
+    ],
+)
+def test_normalize_url_collapses_known_safe_aliases(url: str) -> None:
+    assert normalize_url(url) == "https://github.com/openai/gpt"
+
+
 def test_clean_html_removes_markup_and_non_content_elements() -> None:
     value = "<p>Hello&nbsp;<strong>world</strong>.</p><script>bad()</script><p>Next</p>"
 

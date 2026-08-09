@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from f117.adapters.hacker_news import HackerNewsCollector
 from f117.domain import Category, FeedSource
 
@@ -37,7 +39,7 @@ def test_story_normalization_carries_popularity_and_fallback_url() -> None:
     assert item is not None
     assert item.external_id == "42"
     assert item.url == "https://news.ycombinator.com/item?id=42"
-    assert item.popularity == {"points": 321.0, "comments": 44.0}
+    assert item.popularity == {"hn_points": 321.0, "hn_comments": 44.0}
     assert item.author == "ada"
 
 
@@ -53,3 +55,20 @@ def test_story_normalization_skips_deleted_and_non_story_items() -> None:
         )
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_one_failed_item_does_not_discard_hacker_news_batch() -> None:
+    class Collector(HackerNewsCollector):
+        async def _json(self, _session, url: str):  # type: ignore[no-untyped-def]
+            if url.endswith("beststories.json"):
+                return [1, 2]
+            if url.endswith("/2.json"):
+                raise RuntimeError("one item failed")
+            return {"id": 1, "type": "story", "title": "AI release", "time": 1_700_000_000}
+
+    result = await Collector(timeout_seconds=1, user_agent="test").fetch(
+        _source(), session=object()
+    )
+
+    assert [item.external_id for item in result.items] == ["1"]

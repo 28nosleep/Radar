@@ -29,6 +29,9 @@ class _FailingInsertSession:
     async def scalar(self, _: object) -> None:
         return None
 
+    async def scalars(self, _: object) -> SimpleNamespace:
+        return SimpleNamespace(all=lambda: [])
+
     async def execute(self, _: object) -> SimpleNamespace:
         self.update_called = True
         return SimpleNamespace(rowcount=1)

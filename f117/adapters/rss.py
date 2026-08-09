@@ -24,6 +24,7 @@ class FeedFetchResult:
     etag: str | None
     last_modified: str | None
     not_modified: bool = False
+    partial: bool = False
 
 
 class RSSCollector:
@@ -100,15 +101,16 @@ class RSSCollector:
         if parsed.bozo and not parsed.entries:
             raise RSSFetchError(f"Malformed feed {source.key}: {parsed.bozo_exception}")
         collected_at = datetime.now(UTC)
-        items = [
+        parsed_items = [
             item
             for entry in parsed.entries
             if (item := self._entry_to_item(source, entry, collected_at)) is not None
         ]
         return FeedFetchResult(
-            items=items,
+            items=parsed_items[: source.item_limit],
             etag=response_etag,
             last_modified=response_last_modified,
+            partial=len(parsed_items) > source.item_limit,
         )
 
     async def _read_bounded(self, response: aiohttp.ClientResponse) -> bytes:

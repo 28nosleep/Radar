@@ -17,7 +17,11 @@ _CATEGORY_PATTERNS: dict[Category, tuple[re.Pattern[str], ...]] = {
             r"\bdeep learning\b",
             r"\bneural networks?\b",
             r"\bgenerative ai\b",
+            r"\bai safety\b",
+            r"\balignment\b",
+            r"\bloss of control\b",
             r"\bискусственн(?:ый|ого|ому|ым) интеллект\w*\b",
+            r"\bбезопасност[ьи] (?:ии|ai)\b",
             r"\bмашинн(?:ое|ого|ому|ым) обучени\w*\b",
         )
     ),

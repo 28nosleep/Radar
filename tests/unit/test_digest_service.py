@@ -66,10 +66,23 @@ class _MemoryRepository:
             for material in self.materials
         )
 
+    async def material_by_canonical_url(self, canonical_url: str) -> StoredMaterial | None:
+        return next(
+            (
+                material
+                for material in self.materials
+                if material.item.canonical_url == canonical_url
+            ),
+            None,
+        )
+
     async def refresh_observation(
         self, source_id: UUID, external_id: str, metrics: dict[str, float]
     ) -> None:
         del source_id, external_id, metrics
+
+    async def refresh_material(self, source_id: UUID, item: NormalizedItem) -> None:
+        await self.refresh_observation(source_id, item.external_id, item.popularity)
 
     async def add_material(
         self,

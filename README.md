@@ -109,12 +109,13 @@ configured channels and search queries. It is enabled only after setting
 
 ## Metric history
 
-For GitHub, Reddit, and YouTube, every material seen again receives a snapshot in
-`metric_snapshots`. Two snapshots are enough to calculate `growth_absolute`,
-`growth_percent`, `growth_per_hour`, and the measurement window. This is a normal
-ranking signal rather than the Discovery Engine: anomaly detection and separate alerts
-remain M4 work. The editorial Telegram line `Trending: +…% over … h` appears only when
-two snapshots exist.
+For GitHub, Reddit, YouTube, and Hacker News, every material seen again receives a
+snapshot in `metric_snapshots`. Provider-namespaced metrics are aggregated onto a
+canonical duplicate root without summing crossposts from the same provider family.
+Two snapshots calculate an absolute per-hour signal and measurement window; corrections
+or negative latest deltas clear a stale rising signal. This remains a normal ranking
+signal rather than an alerting system. The editorial Telegram line appears only when two
+snapshots confirm positive growth.
 
 You can optionally add `F117_GITHUB_API_TOKEN` (for a higher rate limit) and
 `F117_YOUTUBE_API_KEY` to `.env`. Keys are never committed.
