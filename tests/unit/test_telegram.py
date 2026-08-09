@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -83,13 +84,20 @@ def test_editorial_card_is_human_readable_and_hides_debug_metrics() -> None:
 
     assert "Почему это важно:" in rendered
     assert "Источник:" in rendered
-    assert "Теги: исследования" in rendered
-    assert "Открыть материал" in rendered
+    assert "#Research #Technology" in rendered
+    assert "Теги:" not in rendered
+    assert '<a href="https://example.com/item?a=1&amp;b=2">Открыть материал</a>' in rendered
+    assert "\n\n<a href=" in rendered
     assert "score" not in rendered.casefold()
     assert "freshness" not in rendered
     assert rendered.startswith("📄 Исследования\n\n")
-    assert "Комментарий id:28:" in rendered
-    assert rendered.count("<code>") == 1
+    assert "Комментарий id:28:" not in rendered
+    assert "📡 <b>id:28:</b>" in rendered
+    assert "&gt;_" not in rendered
+    for decoration in ("сигнал принят", "аномалия обнаружена", "объект замечен", "новая сборка"):
+        assert decoration not in rendered
+    tags = next(line for line in rendered.splitlines() if line.startswith("#"))
+    assert re.fullmatch(r"#[A-Za-z][A-Za-z0-9]*(?: #[A-Za-z][A-Za-z0-9]*){1,4}", tags)
 
 
 def test_debug_card_exposes_internal_score_only_on_request() -> None:
@@ -164,11 +172,12 @@ async def test_telegram_adapter_sends_intro_and_one_message_per_card(
     assert [receipt.message_id for receipt in receipts] == ["2", "3"]
     reply_markup = requests[1]["reply_markup"]
     assert isinstance(reply_markup, dict)
-    assert reply_markup["inline_keyboard"][0][0]["url"] == cards[0].material.url
-    assert reply_markup["inline_keyboard"][1][0]["text"] == "👍 Полезно"
-    assert reply_markup["inline_keyboard"][1][2]["text"] == "⭐ В пост"
+    assert [[button["text"] for button in row] for row in reply_markup["inline_keyboard"]] == [
+        ["👍 Полезно", "👎 Мимо", "⭐ В пост"]
+    ]
+    assert "Открыть материал" not in str(reply_markup)
     assert (
-        str(cards[0].material.material_id) in reply_markup["inline_keyboard"][1][0]["callback_data"]
+        str(cards[0].material.material_id) in reply_markup["inline_keyboard"][0][0]["callback_data"]
     )
 
 
@@ -224,6 +233,65 @@ async def test_image_card_uses_send_photo_and_invalid_image_falls_back_to_text(
     await TelegramNotifier(bot_token="TOKEN", chat_id="123").send([card])
 
     assert requests == ["sendMessage", "sendPhoto", "sendMessage"]
+
+
+@pytest.mark.asyncio
+async def test_long_image_caption_uses_complete_text_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payloads: list[tuple[str, dict[str, object]]] = []
+
+    class Response:
+        status = 200
+
+        async def __aenter__(self) -> Response:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def json(self, *, content_type: object = None) -> dict[str, object]:
+            del content_type
+            return {"ok": True, "result": {"message_id": len(payloads)}}
+
+    class Session:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        async def __aenter__(self) -> Session:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        def post(self, url: str, *, json: dict[str, object]) -> Response:
+            payloads.append((url.rsplit("/", 1)[-1], json))
+            return Response()
+
+    monkeypatch.setattr(
+        "f117.adapters.telegram.aiohttp.ClientSession", lambda **kwargs: Session(**kwargs)
+    )
+    card = _card(Category.AI).model_copy(
+        update={
+            "material": _card(Category.AI).material.model_copy(
+                update={"media_type": "image", "media_url": "https://cdn.example.com/image.jpg"}
+            ),
+            "enrichment": _card(Category.AI).enrichment.model_copy(
+                update={
+                    "title_ru": "t" * 220,
+                    "summary_ru": "x" * 900,
+                    "why_important": "w" * 220,
+                    "ironic_comment": "i" * 190,
+                }
+            ),
+        }
+    )
+    rendered = render_card(card)
+
+    await TelegramNotifier(bot_token="TOKEN", chat_id="123").send([card])
+
+    assert [method for method, _ in payloads] == ["sendMessage", "sendMessage"]
+    assert payloads[1][1]["text"] == rendered
 
 
 @pytest.mark.asyncio

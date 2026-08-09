@@ -59,6 +59,13 @@ def test_real_delivery_accepts_private_chat_and_credentials(tmp_path: Path) -> N
     validate_settings(settings)
 
 
+def test_runtime_has_no_public_channel_delivery_configuration(tmp_path: Path) -> None:
+    settings = Settings(_env_file=None, rss_catalog_path=_catalog(tmp_path))
+
+    assert "telegram_channel_id" not in type(settings).model_fields
+    assert "public_channel" not in type(settings).model_fields
+
+
 def test_catalog_rejects_duplicate_source_keys(tmp_path: Path) -> None:
     settings = Settings(
         _env_file=None,

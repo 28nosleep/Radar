@@ -110,12 +110,7 @@ def test_rss_extracts_atom_content_image_before_reddit_thumbnail() -> None:
                 }
             ],
             "media_thumbnail": [
-                {
-                    "url": (
-                        "https://preview.redd.it/post.jpeg?width=140&amp;height=98&amp;"
-                        "auto=webp"
-                    )
-                }
+                {"url": ("https://preview.redd.it/post.jpeg?width=140&amp;height=98&amp;auto=webp")}
             ],
         },
         datetime(2026, 8, 9, tzinfo=UTC),

@@ -179,6 +179,17 @@ class TelegramNotifier:
         image_url = material.media_url or material.thumbnail_url
         if material.media_type == "image" and _is_safe_media_url(image_url):
             assert image_url is not None
+            # Telegram captions are deliberately kept smaller than text messages.
+            # Preserve the complete editorial card through the existing text route
+            # rather than trimming an important section just to attach media.
+            if len(rendered) > TELEGRAM_CAPTION_BUDGET:
+                return await self._send_message(
+                    session,
+                    rendered,
+                    disable_preview=True,
+                    link_url=material.url,
+                    material_id=material.material_id,
+                )
             try:
                 return await self._send_photo(session, card, rendered, image_url)
             except TelegramError as exc:
@@ -363,17 +374,16 @@ def group_cards(cards: Sequence[EditorialCard]) -> dict[str, list[EditorialCard]
 def render_card(card: EditorialCard, *, section: str | None = None, debug: bool = False) -> str:
     material = card.material
     enrichment = card.enrichment
-    categories = ", ".join(_category_label(category) for category in material.categories)
+    hashtags = _hashtags(material.categories)
     link = html.escape(_telegram_url(material.url), quote=True)
     rendered = (
         f"{_escape_bounded(section or _section_for(card), 80)}\n\n"
         f"<b>{_escape_bounded(enrichment.title_ru, 220)}</b>\n\n"
         f"{_escape_bounded(enrichment.summary_ru, 380)}\n\n"
         f"<b>Почему это важно:</b> {_escape_bounded(enrichment.why_important, 220)}\n\n"
-        f"<i>Комментарий {_escape_bounded(_id28_comment(enrichment.ironic_comment), 190)}</i>\n\n"
-        f"<code>&gt;_ {_console_accent(card)}</code>\n\n"
-        f"Источник: {_escape_bounded(material.source_name, 160)}\n"
-        f"Теги: {_escape_bounded(categories or _category_label(Category.OTHER), 160)}\n"
+        f"📡 <b>id:28:</b> {_escape_bounded(_id28_comment(enrichment.ironic_comment), 190)}\n\n"
+        f"Источник: {_escape_bounded(material.source_name, 160)}\n\n"
+        f"{hashtags}\n\n"
         f'<a href="{link}">Открыть материал</a>'
     )
     if growth_line := _growth_line(material.popularity):
@@ -391,13 +401,7 @@ def render_card(card: EditorialCard, *, section: str | None = None, debug: bool 
             f"discovery {material.discovery_score:.1f}/100 · "
             f"post {enrichment.post_fit_score}/10\n{_escape_bounded(reasons, 500)}</i>"
         )
-    limit = (
-        TELEGRAM_CAPTION_BUDGET
-        if material.media_type == "image"
-        and _is_safe_media_url(material.media_url or material.thumbnail_url)
-        else TELEGRAM_TEXT_LIMIT
-    )
-    if len(rendered) > limit:
+    if len(rendered) > TELEGRAM_TEXT_LIMIT:
         raise ValueError("Rendered Telegram card exceeds the safe text budget")
     return rendered
 
@@ -454,19 +458,29 @@ def _escape_bounded(value: str, budget: int) -> str:
     return html.escape(value[:low].rstrip()) + "…"
 
 
-def _category_label(category: Category) -> str:
-    return {
-        Category.AI: "ИИ",
-        Category.LLM: "языковые модели",
-        Category.ROBOTICS: "роботы",
-        Category.RESEARCH: "исследования",
-        Category.OPEN_SOURCE: "открытый код",
-        Category.HARDWARE: "оборудование",
-        Category.BRAIN_INTERFACE: "нейроинтерфейсы",
-        Category.FUNNY: "смешное",
-        Category.WTF: "необычное",
-        Category.OTHER: "другое",
-    }[category]
+_CATEGORY_HASHTAGS: dict[Category, str] = {
+    Category.AI: "#AI",
+    Category.LLM: "#LLM",
+    Category.ROBOTICS: "#Robotics",
+    Category.RESEARCH: "#Research",
+    Category.OPEN_SOURCE: "#OpenSource",
+    Category.HARDWARE: "#Hardware",
+    Category.BRAIN_INTERFACE: "#BrainComputerInterface",
+    Category.FUNNY: "#Funny",
+    Category.WTF: "#WTF",
+    Category.OTHER: "#Technology",
+}
+
+
+def _hashtags(categories: Sequence[Category]) -> str:
+    """Render a small, stable controlled vocabulary of ASCII Telegram hashtags."""
+
+    tags = list(
+        dict.fromkeys(_CATEGORY_HASHTAGS.get(category, "#Technology") for category in categories)
+    )
+    if len(tags) < 2:
+        tags.append("#Technology" if "#Technology" not in tags else "#AI")
+    return " ".join(tags[:5])
 
 
 def _growth_line(metrics: dict[str, float]) -> str | None:
@@ -477,20 +491,17 @@ def _growth_line(metrics: dict[str, float]) -> str | None:
     return f"Набирает: +{percent:.0f}% за {hours:.1f} ч"
 
 
-def _console_accent(card: EditorialCard) -> str:
-    accents = ("сигнал принят", "аномалия обнаружена", "объект замечен", "новая сборка")
-    return accents[card.material.material_id.int % len(accents)]
-
-
 def _id28_comment(value: str) -> str:
     comment = value.strip()
-    return comment if comment.startswith("id:28") else f"id:28: {comment}"
+    if comment.casefold().startswith("id:28:"):
+        return comment[len("id:28:") :].strip()
+    return comment
 
 
 def _reply_markup(material_id: UUID, link_url: str) -> dict[str, object]:
+    del link_url
     return {
         "inline_keyboard": [
-            [{"text": "Открыть материал", "url": link_url}],
             [
                 {"text": "👍 Полезно", "callback_data": f"feedback:{material_id}:useful"},
                 {"text": "👎 Мимо", "callback_data": f"feedback:{material_id}:miss"},

@@ -34,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=__version__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("run-once", help="run one complete source-to-Telegram cycle")
-    subparsers.add_parser("scheduler", help="run immediately and then on an interval")
+    subparsers.add_parser("scheduler", help="run on the configured interval")
     subparsers.add_parser("status", help="print compact database counters")
     subparsers.add_parser("validate-config", help="validate .env and the source catalog")
     quality = subparsers.add_parser(
@@ -183,6 +183,15 @@ async def _run_scheduler(settings: Settings) -> None:
         else None
     )
     try:
+        # Starting a container must not turn any undelivered candidates into an
+        # unscheduled digest.  In particular, this leaves the persisted delivery
+        # retry and ambiguous-delivery lifecycle untouched until the next regular
+        # scheduler tick.  `radar run-once` remains the explicit immediate path.
+        interval = settings.scheduler_interval_minutes * 60.0
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+        except TimeoutError:
+            pass
         while not stop_event.is_set():
             started_at = monotonic()
             try:
@@ -190,10 +199,7 @@ async def _run_scheduler(settings: Settings) -> None:
                 logger.info("Digest run completed: %s", summary)
             except Exception:
                 logger.exception("Scheduled digest run failed; the scheduler will continue")
-
-            elapsed = monotonic() - started_at
-            interval = settings.scheduler_interval_minutes * 60.0
-            timeout = max(1.0, interval - elapsed)
+            timeout = max(1.0, interval - (monotonic() - started_at))
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=timeout)
             except TimeoutError:
