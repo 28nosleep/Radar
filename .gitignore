@@ -1,0 +1,35 @@
+# Local configuration and secrets. Keep the empty template below tracked.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+
+# Python and test artifacts.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Local databases and service data.
+*.db
+*.sqlite
+*.sqlite3
+postgres_data/
+data/postgres/
+
+# Editor, OS, and temporary artifacts.
+.cache/
+tmp/
+.tmp/
+.DS_Store

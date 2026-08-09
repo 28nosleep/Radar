@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "radar-intelligence-engine"
+version = "0.1.0"
+description = "Radar — personal AI and robotics intelligence digest"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "aiohttp~=3.14.2",
+  "alembic~=1.18.5",
+  "asyncpg>=0.30,<1",
+  "feedparser>=6.0.12,<7",
+  "openai~=2.46.0",
+  "pydantic>=2.11,<3",
+  "pydantic-settings>=2.10,<3",
+  "sqlalchemy~=2.0.51",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.17,<2",
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.1,<2",
+  "ruff>=0.12,<1",
+]
+
+[project.scripts]
+radar = "f117.cli.main:main"
+f117 = "f117.cli.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["f117"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+ignore = ["RUF001"] # Russian prompts and classifier patterns are intentional.
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+plugins = ["pydantic.mypy", "sqlalchemy.ext.mypy.plugin"]
+packages = ["f117"]
+
+[[tool.mypy.overrides]]
+module = ["feedparser"]
+ignore_missing_imports = true

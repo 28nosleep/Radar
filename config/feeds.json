@@ -1,0 +1,38 @@
+[
+  {
+    "key": "openai-news",
+    "name": "OpenAI News",
+    "feed_url": "https://openai.com/news/rss.xml",
+    "site_url": "https://openai.com/news/",
+    "reputation": 1.0,
+    "enabled": true,
+    "default_categories": ["ai", "llm"]
+  },
+  {
+    "key": "deepmind-blog",
+    "name": "Google DeepMind",
+    "feed_url": "https://deepmind.google/blog/rss.xml",
+    "site_url": "https://deepmind.google/blog/",
+    "reputation": 1.0,
+    "enabled": true,
+    "default_categories": ["ai", "research"]
+  },
+  {
+    "key": "nvidia-blog",
+    "name": "NVIDIA Blog",
+    "feed_url": "https://blogs.nvidia.com/feed/",
+    "site_url": "https://blogs.nvidia.com/",
+    "reputation": 0.9,
+    "enabled": true,
+    "default_categories": ["ai", "hardware"]
+  },
+  {
+    "key": "mit-ai-news",
+    "name": "MIT News: Artificial Intelligence",
+    "feed_url": "https://news.mit.edu/rss/topic/artificial-intelligence2",
+    "site_url": "https://news.mit.edu/topic/artificial-intelligence2",
+    "reputation": 0.9,
+    "enabled": true,
+    "default_categories": ["ai", "research"]
+  }
+]
