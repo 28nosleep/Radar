@@ -517,7 +517,6 @@ def _select_for_delivery(
             material.material_id,
         ),
     )
-    available_slots = max(0, top_n - len(retry_queue))
     now = datetime.now(UTC)
     editorial_retries = sorted(
         (
@@ -532,12 +531,6 @@ def _select_for_delivery(
             material.material_id,
         ),
     )
-    # Fresh material must retain a place whenever a multi-card digest has one
-    # available. A single-card digest prefers fresh material, but can still
-    # deliver a due retry when it is the only candidate.
-    effective_retry_slots = min(editorial_retry_slots, max(0, top_n - 1))
-    reserved_retries = editorial_retries[: min(effective_retry_slots, available_slots)]
-    available_slots -= len(reserved_retries)
     fresh = sorted(
         (
             material
@@ -558,7 +551,22 @@ def _select_for_delivery(
     )
     if diversity_config is not None:
         fresh = diversify(fresh, config=diversity_config)
-    selected = retry_queue[:top_n] + reserved_retries + fresh[:available_slots]
+
+    # Reserve a fresh slot against both retry queues together. Cached delivery
+    # retries remain first in FIFO order, while editorial retries consume only
+    # their bounded FIFO quota from the remaining priority capacity.
+    if top_n == 1:
+        # Keep the single-card order: cached delivery work first, then fresh
+        # material, and a due editorial retry only when it is the sole choice.
+        cached_retries = retry_queue[:1]
+        reserved_retries: list[RankedMaterial] = []
+    else:
+        priority_capacity = top_n - 1 if fresh else top_n
+        cached_retries = retry_queue[:priority_capacity]
+        editorial_capacity = max(0, priority_capacity - len(cached_retries))
+        reserved_retries = editorial_retries[: min(editorial_retry_slots, editorial_capacity)]
+    selected = cached_retries + reserved_retries
+    selected += fresh[: max(0, top_n - len(selected))]
     if top_n == 1 and not selected and editorial_retry_slots > 0 and editorial_retries:
         return [editorial_retries[0]]
     return selected

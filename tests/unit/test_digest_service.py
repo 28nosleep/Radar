@@ -574,7 +574,7 @@ async def test_reddit_failure_does_not_block_other_sources(tmp_path: Path) -> No
     assert summary.source_failures[0].source_key == "reddit-ai"
 
 
-def test_cached_gpt_cards_are_fifo_delivery_queue_before_new_top_ranked_items() -> None:
+def test_cached_gpt_cards_are_fifo_before_a_reserved_fresh_slot() -> None:
     now = datetime.now(UTC)
     old_cached_id = uuid4()
     recent_cached_id = uuid4()
@@ -674,7 +674,7 @@ def test_cached_gpt_cards_are_fifo_delivery_queue_before_new_top_ranked_items() 
 
     selected = _select_for_delivery(ranked, candidates, top_n=2)
 
-    assert [material.material_id for material in selected] == [old_cached_id, recent_cached_id]
+    assert [material.material_id for material in selected] == [old_cached_id, fresh_id]
 
 
 def test_other_viral_discovery_does_not_displace_profiled_ai_material() -> None:

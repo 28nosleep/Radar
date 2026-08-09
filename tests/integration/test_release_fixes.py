@@ -304,3 +304,148 @@ async def test_editorial_retry_slots_preserve_a_fresh_slot_and_handle_top_one(
         editorial_retry_slots=3,
     )
     assert [material.material_id for material in retry_only] == [retry_one.id]
+
+
+@pytest.mark.asyncio
+async def test_cached_and_editorial_retries_share_the_fresh_slot_reservation(
+    repository: Repository,
+) -> None:
+    state = (await repository.sync_sources([_source()]))[0]
+    cached = await repository.add_material(state.id, _item("rss", "cached"))
+    await repository.save_enrichment(
+        cached.id,
+        EditorialEnrichment(
+            title_ru="Cached",
+            summary_ru="Cached summary",
+            why_important="Cached importance",
+            post_fit_score=7,
+        ),
+        model="test",
+        usage={"total_tokens": 1},
+    )
+    editorial_one = await repository.add_material(state.id, _item("rss", "editorial-one"))
+    editorial_two = await repository.add_material(state.id, _item("rss", "editorial-two"))
+    fresh = await repository.add_material(state.id, _item("rss", "fresh"))
+    for material in (editorial_one, editorial_two):
+        await repository.record_editorial_failure(material.id, error="429", retry_delay_seconds=0)
+    candidates = await repository.digest_candidates(lookback_hours=24)
+    ranked = [
+        RankedMaterial(
+            material_id=candidate.id,
+            title=candidate.item.title,
+            url=candidate.item.url,
+            source_name=candidate.item.source_name,
+            published_at=candidate.item.published_at,
+            description=candidate.item.description,
+            categories=candidate.item.categories,
+            popularity=candidate.item.popularity,
+            independent_mentions=candidate.independent_mentions,
+            score=100.0,
+            score_reasons=[],
+        )
+        for candidate in candidates
+    ]
+
+    selected = _select_for_delivery(ranked, candidates, top_n=3, editorial_retry_slots=3)
+
+    assert [material.material_id for material in selected].count(cached.id) == 1
+    assert fresh.id in {material.material_id for material in selected}
+    assert len(selected) == 3
+
+
+@pytest.mark.asyncio
+async def test_two_cached_retries_still_leave_a_fresh_slot(
+    repository: Repository,
+) -> None:
+    state = (await repository.sync_sources([_source()]))[0]
+    cached = [
+        await repository.add_material(state.id, _item("rss", f"cached-{number}"))
+        for number in range(2)
+    ]
+    for material in cached:
+        await repository.save_enrichment(
+            material.id,
+            EditorialEnrichment(
+                title_ru="Cached",
+                summary_ru="Cached summary",
+                why_important="Cached importance",
+                post_fit_score=7,
+            ),
+            model="test",
+            usage={"total_tokens": 1},
+        )
+    for number in range(2):
+        material = await repository.add_material(state.id, _item("rss", f"editorial-{number}"))
+        await repository.record_editorial_failure(material.id, error="429", retry_delay_seconds=0)
+    fresh = await repository.add_material(state.id, _item("rss", "fresh"))
+    candidates = await repository.digest_candidates(lookback_hours=24)
+    ranked = [
+        RankedMaterial(
+            material_id=candidate.id,
+            title=candidate.item.title,
+            url=candidate.item.url,
+            source_name=candidate.item.source_name,
+            published_at=candidate.item.published_at,
+            description=candidate.item.description,
+            categories=candidate.item.categories,
+            popularity=candidate.item.popularity,
+            independent_mentions=candidate.independent_mentions,
+            score=100.0,
+            score_reasons=[],
+        )
+        for candidate in candidates
+    ]
+
+    selected = _select_for_delivery(ranked, candidates, top_n=3, editorial_retry_slots=3)
+
+    assert {material.material_id for material in selected} == {cached[0].id, cached[1].id, fresh.id}
+
+
+@pytest.mark.asyncio
+async def test_retries_fill_digest_when_no_fresh_candidate_exists(
+    repository: Repository,
+) -> None:
+    state = (await repository.sync_sources([_source()]))[0]
+    cached = await repository.add_material(state.id, _item("rss", "cached"))
+    await repository.save_enrichment(
+        cached.id,
+        EditorialEnrichment(
+            title_ru="Cached",
+            summary_ru="Cached summary",
+            why_important="Cached importance",
+            post_fit_score=7,
+        ),
+        model="test",
+        usage={"total_tokens": 1},
+    )
+    editorial = [
+        await repository.add_material(state.id, _item("rss", f"editorial-{number}"))
+        for number in range(2)
+    ]
+    for material in editorial:
+        await repository.record_editorial_failure(material.id, error="429", retry_delay_seconds=0)
+    candidates = await repository.digest_candidates(lookback_hours=24)
+    ranked = [
+        RankedMaterial(
+            material_id=candidate.id,
+            title=candidate.item.title,
+            url=candidate.item.url,
+            source_name=candidate.item.source_name,
+            published_at=candidate.item.published_at,
+            description=candidate.item.description,
+            categories=candidate.item.categories,
+            popularity=candidate.item.popularity,
+            independent_mentions=candidate.independent_mentions,
+            score=100.0,
+            score_reasons=[],
+        )
+        for candidate in candidates
+    ]
+
+    selected = _select_for_delivery(ranked, candidates, top_n=3, editorial_retry_slots=3)
+
+    assert {material.material_id for material in selected} == {
+        cached.id,
+        editorial[0].id,
+        editorial[1].id,
+    }
