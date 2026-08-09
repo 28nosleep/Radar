@@ -84,6 +84,7 @@ class MaterialModel(Base):
     )
     independent_mentions: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    discovery_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     score_reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 
     llm_enrichment: Mapped[dict[str, Any] | None] = mapped_column(JSON)

@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from uuid import UUID
 
 from f117.adapters.collectors import SourceCollector
@@ -14,6 +15,7 @@ from f117.config import Settings
 from f117.domain import EditorialCard, RankedMaterial, StoredMaterial
 from f117.pipeline.classifier import classify_item
 from f117.pipeline.deduplicator import find_duplicate
+from f117.pipeline.discovery import DiscoveryConfig, assess_discovery
 from f117.pipeline.normalizer import normalize_item
 from f117.pipeline.ranking import RankingConfig, score_material
 from f117.storage.repository import Repository, SourceState
@@ -77,6 +79,16 @@ class DigestService:
             unusualness_weight=settings.rank_unusualness_weight,
             freshness_half_life_hours=settings.rank_freshness_half_life_hours,
             full_mentions=settings.rank_full_mentions,
+        )
+        self.discovery_config = DiscoveryConfig(
+            growth_weight=settings.discovery_growth_weight,
+            acceleration_weight=settings.discovery_acceleration_weight,
+            diversity_weight=settings.discovery_diversity_weight,
+            novelty_weight=settings.discovery_novelty_weight,
+            freshness_weight=settings.discovery_freshness_weight,
+            min_baseline=settings.discovery_min_baseline,
+            min_growth_absolute=settings.discovery_min_growth_absolute,
+            hidden_gem_max_popularity=settings.discovery_hidden_gem_max_popularity,
         )
 
     async def run_once(self) -> RunSummary:
@@ -162,11 +174,40 @@ class DigestService:
             ranked = [
                 score_material(candidate, config=self.ranking_config) for candidate in candidates
             ]
+            histories = await self.repository.metric_histories(
+                [candidate.id for candidate in candidates]
+            )
+            now = datetime.now(UTC)
+            assessed = {
+                candidate.id: assess_discovery(
+                    candidate,
+                    histories.get(candidate.id, []),
+                    now=now,
+                    config=self.discovery_config,
+                )
+                for candidate in candidates
+            }
+            ranked = [
+                material.model_copy(
+                    update={
+                        "discovery_score": assessed[material.material_id].score,
+                        "discovery_reasons": assessed[material.material_id].reasons,
+                        "hidden_gem": assessed[material.material_id].hidden_gem,
+                        "rising": assessed[material.material_id].score
+                        >= self.settings.discovery_rising_threshold,
+                    }
+                )
+                for material in ranked
+            ]
             await self.repository.save_rankings(ranked)
+            await self.repository.save_discovery_scores(
+                {material.material_id: material.discovery_score for material in ranked}
+            )
             selected = _select_for_delivery(
                 ranked,
                 candidates,
                 top_n=self.settings.digest_top_n,
+                discovery_selection_boost=self.settings.discovery_selection_boost,
             )
             counts["selected_count"] = len(selected)
 
@@ -308,6 +349,7 @@ def _select_for_delivery(
     candidates: Sequence[StoredMaterial],
     *,
     top_n: int,
+    discovery_selection_boost: float = 0.0,
 ) -> list[RankedMaterial]:
     """Reserve the delivery queue before choosing fresh editorial candidates.
 
@@ -335,7 +377,11 @@ def _select_for_delivery(
             for material in ranked
             if candidate_by_id[material.material_id].llm_enrichment is None
         ),
-        key=lambda material: (material.score, material.published_at),
+        key=lambda material: (
+            material.score + material.discovery_score * discovery_selection_boost,
+            material.score,
+            material.published_at,
+        ),
         reverse=True,
     )
     return retry_queue[:top_n] + fresh[:available_slots]

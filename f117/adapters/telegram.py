@@ -139,6 +139,7 @@ def group_cards(cards: Sequence[EditorialCard]) -> dict[str, list[EditorialCard]
     order = [
         "🔥 Главное",
         "📈 Набирает популярность",
+        "💎 Скрытые находки",
         "🤖 Роботы",
         "📄 Исследования",
         "🚀 Open Source",
@@ -163,10 +164,17 @@ def render_card(card: EditorialCard, *, section: str | None = None, debug: bool 
     )
     if growth_line := _growth_line(material.popularity):
         rendered = rendered.replace("\nИсточник:", f"\n{growth_line}\n\nИсточник:")
+    if material.independent_mentions >= 2:
+        rendered = rendered.replace(
+            "\nИсточник:",
+            "\nЗамечено сразу в "
+            f"{material.independent_mentions} независимых источниках\n\nИсточник:",
+        )
     if debug:
         reasons = "; ".join(material.score_reasons[:3])
         rendered += (
             f"\n\n<i>Debug: score {material.score:.1f}/100 · "
+            f"discovery {material.discovery_score:.1f}/100 · "
             f"post {enrichment.post_fit_score}/10\n{_escape_bounded(reasons, 500)}</i>"
         )
     if len(rendered) > TELEGRAM_TEXT_LIMIT:
@@ -198,9 +206,11 @@ def _section_for(card: EditorialCard) -> str:
         return "🤖 Роботы"
     if Category.RESEARCH in categories:
         return "📄 Исследования"
+    if card.material.hidden_gem:
+        return "💎 Скрытые находки"
     if Category.OPEN_SOURCE in categories:
         return "🚀 Open Source"
-    if card.material.independent_mentions >= 2 or popularity >= 1000:
+    if card.material.rising or card.material.independent_mentions >= 2 or popularity >= 1000:
         return "📈 Набирает популярность"
     return "🔥 Главное"
 

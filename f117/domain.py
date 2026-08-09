@@ -100,6 +100,7 @@ class StoredMaterial(BaseModel):
     independent_mentions: int = Field(default=1, ge=1)
     score: float = 0.0
     score_reasons: list[str] = Field(default_factory=list)
+    discovery_score: float = 0.0
     delivered_at: datetime | None = None
     llm_enrichment: EditorialEnrichment | None = None
     llm_model: str | None = None
@@ -127,6 +128,10 @@ class RankedMaterial(BaseModel):
     independent_mentions: int
     score: float
     score_reasons: list[str]
+    discovery_score: float = 0.0
+    discovery_reasons: list[str] = Field(default_factory=list)
+    hidden_gem: bool = False
+    rising: bool = False
 
 
 class EditorialCard(BaseModel):

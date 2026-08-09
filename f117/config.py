@@ -48,6 +48,17 @@ class Settings(BaseSettings):
     rank_freshness_half_life_hours: float = Field(default=36.0, gt=0.0)
     rank_full_mentions: int = Field(default=5, ge=2)
 
+    discovery_growth_weight: float = Field(default=35.0, ge=0.0)
+    discovery_acceleration_weight: float = Field(default=15.0, ge=0.0)
+    discovery_diversity_weight: float = Field(default=20.0, ge=0.0)
+    discovery_novelty_weight: float = Field(default=15.0, ge=0.0)
+    discovery_freshness_weight: float = Field(default=15.0, ge=0.0)
+    discovery_min_baseline: float = Field(default=25.0, ge=1.0)
+    discovery_min_growth_absolute: float = Field(default=10.0, ge=0.0)
+    discovery_rising_threshold: float = Field(default=55.0, ge=0.0, le=100.0)
+    discovery_hidden_gem_max_popularity: float = Field(default=2000.0, ge=1.0)
+    discovery_selection_boost: float = Field(default=0.2, ge=0.0, le=0.5)
+
     openai_enabled: bool = False
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-5.6-terra"

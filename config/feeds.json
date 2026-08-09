@@ -115,6 +115,6 @@
     "key": "reddit-chatgpt", "name": "Reddit: r/ChatGPT", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "ChatGPT", "reddit_listing": "hot", "item_limit": 15, "reputation": 0.35, "enabled": true, "default_categories": ["ai", "llm"]
   },
   {
-    "key": "youtube-ai-robotics", "name": "YouTube: AI and Robotics", "kind": "youtube", "feed_url": "https://www.googleapis.com/youtube/v3", "site_url": "https://www.youtube.com/", "item_limit": 20, "youtube_queries": ["AI robotics humanoid research demo", "AI alignment safety research"], "reputation": 0.7, "enabled": false, "default_categories": ["ai", "robotics"]
+    "key": "youtube-ai-robotics", "name": "YouTube: AI and Robotics", "kind": "youtube", "feed_url": "https://www.googleapis.com/youtube/v3", "site_url": "https://www.youtube.com/", "item_limit": 20, "youtube_queries": ["AI robotics humanoid research demo", "AI alignment safety research"], "reputation": 0.7, "enabled": true, "default_categories": ["ai", "robotics"]
   }
 ]

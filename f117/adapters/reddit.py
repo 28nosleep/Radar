@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -29,6 +30,7 @@ class RedditCollector:
         self.client_secret = client_secret
         self.access_token = ""
         self.token_lock = asyncio.Lock()
+        self.logger = logging.getLogger(__name__)
 
     async def fetch(
         self,
@@ -42,9 +44,10 @@ class RedditCollector:
         if not source.reddit_subreddit:
             raise RedditFetchError(f"{source.key} must declare reddit_subreddit")
         if not self.client_id or not self.client_secret:
-            raise RedditFetchError(
-                "F117_REDDIT_CLIENT_ID and F117_REDDIT_CLIENT_SECRET are required"
+            self.logger.info(
+                "Reddit source %s skipped: OAuth credentials are not configured", source.key
             )
+            return FeedFetchResult(items=[], etag=None, last_modified=None)
         owns_session = session is None
         if session is None:
             session = aiohttp.ClientSession(timeout=self.timeout, headers=self.headers)

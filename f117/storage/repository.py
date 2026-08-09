@@ -232,6 +232,24 @@ class Repository:
                 MetricSnapshot(captured_at=row.captured_at, metrics=row.metrics) for row in rows
             ]
 
+    async def metric_histories(self, material_ids: list[UUID]) -> dict[UUID, list[MetricSnapshot]]:
+        if not material_ids:
+            return {}
+        async with self.database.session() as session:
+            rows = (
+                await session.scalars(
+                    select(MetricSnapshotModel)
+                    .where(MetricSnapshotModel.material_id.in_(material_ids))
+                    .order_by(MetricSnapshotModel.captured_at)
+                )
+            ).all()
+        result: dict[UUID, list[MetricSnapshot]] = {material_id: [] for material_id in material_ids}
+        for row in rows:
+            result[row.material_id].append(
+                MetricSnapshot(captured_at=row.captured_at, metrics=row.metrics)
+            )
+        return result
+
     async def save_ranking(self, ranked: RankedMaterial) -> None:
         await self.save_rankings([ranked])
 
@@ -244,6 +262,18 @@ class Repository:
                     update(MaterialModel)
                     .where(MaterialModel.id == ranked.material_id)
                     .values(score=ranked.score, score_reasons=ranked.score_reasons)
+                )
+            await session.commit()
+
+    async def save_discovery_scores(self, values: dict[UUID, float]) -> None:
+        if not values:
+            return
+        async with self.database.session() as session:
+            for material_id, score in values.items():
+                await session.execute(
+                    update(MaterialModel)
+                    .where(MaterialModel.id == material_id)
+                    .values(discovery_score=score)
                 )
             await session.commit()
 
@@ -400,6 +430,7 @@ class Repository:
             independent_mentions=row.independent_mentions,
             score=row.score,
             score_reasons=row.score_reasons,
+            discovery_score=row.discovery_score,
             delivered_at=row.delivered_at,
             llm_enrichment=(
                 EditorialEnrichment.model_validate(row.llm_enrichment)

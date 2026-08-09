@@ -36,3 +36,17 @@ def test_reddit_post_normalization_keeps_discussion_metrics_and_text() -> None:
     assert item.popularity == {"reddit_upvotes": 80.0, "reddit_comments": 21.0}
     assert item.description == "Technical details"
     assert item.url.startswith("https://www.reddit.com/r/ControlProblem")
+
+
+async def test_reddit_without_credentials_is_skipped_without_network() -> None:
+    source = FeedSource(
+        key="reddit",
+        name="Reddit",
+        kind="reddit",
+        feed_url="https://www.reddit.com",
+        reddit_subreddit="robotics",
+    )
+
+    result = await RedditCollector(timeout_seconds=1, user_agent="test").fetch(source)
+
+    assert result.items == []

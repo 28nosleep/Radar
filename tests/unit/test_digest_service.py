@@ -120,6 +120,17 @@ class _MemoryRepository:
             for material in self.materials
         ]
 
+    async def metric_histories(self, material_ids: list[UUID]) -> dict[UUID, list[object]]:
+        return {material_id: [] for material_id in material_ids}
+
+    async def save_discovery_scores(self, values: dict[UUID, float]) -> None:
+        self.materials = [
+            material.model_copy(update={"discovery_score": values[material.id]})
+            if material.id in values
+            else material
+            for material in self.materials
+        ]
+
     async def save_enrichment(
         self,
         material_id: UUID,
