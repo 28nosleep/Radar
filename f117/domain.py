@@ -8,6 +8,10 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 
+def _default_reddit_rss_listings() -> list[Literal["new", "hot", "rising"]]:
+    return ["new", "hot", "rising"]
+
+
 class Category(StrEnum):
     AI = "ai"
     LLM = "llm"
@@ -16,6 +20,7 @@ class Category(StrEnum):
     OPEN_SOURCE = "open_source"
     HARDWARE = "hardware"
     BRAIN_INTERFACE = "brain_interface"
+    CYBERCULTURE = "cyberculture"
     FUNNY = "funny"
     WTF = "wtf"
     OTHER = "other"
@@ -45,6 +50,11 @@ class FeedSource(BaseModel):
     github_include_releases: bool = True
     reddit_subreddit: str | None = None
     reddit_listing: Literal["hot", "new", "top"] = "hot"
+    # OAuth continues to use ``reddit_listing``.  These are only queried by the
+    # public Atom fallback and are deliberately qualitative, not engagement data.
+    reddit_rss_listings: list[Literal["new", "hot", "rising"]] = Field(
+        default_factory=_default_reddit_rss_listings
+    )
     youtube_channel_ids: list[str] = Field(default_factory=list)
     youtube_queries: list[str] = Field(default_factory=list)
 
@@ -64,6 +74,7 @@ class CollectedItem(BaseModel):
     author: str | None = None
     source_categories: list[Category] = Field(default_factory=list)
     popularity: dict[str, float] = Field(default_factory=dict)
+    qualitative_signals: list[str] = Field(default_factory=list)
     subreddit: str | None = None
     media_type: Literal["image", "video", "none"] = "none"
     media_url: str | None = None
@@ -89,6 +100,7 @@ class NormalizedItem(BaseModel):
     source_categories: list[Category] = Field(default_factory=list)
     categories: list[Category] = Field(default_factory=list)
     popularity: dict[str, float] = Field(default_factory=dict)
+    qualitative_signals: list[str] = Field(default_factory=list)
     subreddit: str | None = None
     media_type: Literal["image", "video", "none"] = "none"
     media_url: str | None = None
@@ -104,6 +116,11 @@ class EditorialEnrichment(BaseModel):
     title_ru: str = Field(min_length=1, max_length=300)
     summary_ru: str = Field(min_length=1, max_length=1200)
     why_important: str = Field(min_length=1, max_length=700)
+    audience_interest_reason: str = Field(
+        default="Материал соответствует редакционному профилю Radar.",
+        min_length=1,
+        max_length=500,
+    )
     ironic_comment: str = Field(default="id:28: наблюдение записано.", min_length=1, max_length=220)
     post_fit_score: int = Field(ge=0, le=10)
 
@@ -157,6 +174,10 @@ class RankedMaterial(BaseModel):
     discovery_reasons: list[str] = Field(default_factory=list)
     hidden_gem: bool = False
     rising: bool = False
+    editorial_fit: float = Field(default=0.0, ge=0.0, le=100.0)
+    editorial_reasons: list[str] = Field(default_factory=list)
+    delivery_score: float = Field(default=0.0, ge=0.0, le=100.0)
+    urgent: bool = False
 
 
 class EditorialCard(BaseModel):

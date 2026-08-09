@@ -17,6 +17,7 @@ _CATEGORY_PATTERNS: dict[Category, tuple[re.Pattern[str], ...]] = {
             r"\bdeep learning\b",
             r"\bneural networks?\b",
             r"\bgenerative ai\b",
+            r"\b(?:openai|anthropic|deepmind|xai)\b",
             r"\bai safety\b",
             r"\balignment\b",
             r"\bloss of control\b",
@@ -98,6 +99,24 @@ _CATEGORY_PATTERNS: dict[Category, tuple[re.Pattern[str], ...]] = {
             r"\bneurointerfaces?\b",
             r"\bнейроинтерфейс\w*\b",
             r"\bмозгов(?:ой|ого|ым) имплант\w*\b",
+        )
+    ),
+    Category.CYBERCULTURE: tuple(
+        re.compile(pattern, re.IGNORECASE)
+        for pattern in (
+            r"\bcyberpunk\b",
+            r"\bcyberculture\b",
+            r"\bneuromancer\b",
+            r"\btranshuman(?:ism|ist)?\b",
+            r"\bdigital subcultures?\b",
+            r"\binternet culture\b",
+            r"\btech(?:nology)? memes?\b",
+            r"\b(?:ai|robot|hacking) (?:film|movie|series|show|game|adaptation)\b",
+            r"\b(?:film|movie|series|show|game|adaptation) "
+            r"(?:about|featuring) (?:ai|robots?|hacking)\b",
+            r"\bкиберпанк\w*\b",
+            r"\bтрансгуманизм\w*\b",
+            r"\bинтернет.культур\w*\b",
         )
     ),
     Category.FUNNY: tuple(

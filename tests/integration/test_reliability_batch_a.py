@@ -117,11 +117,11 @@ def _item(
         source_key="source-a",
         source_name="Source A",
         source_reputation=0.9,
-        title=f"Reliable AI material {external_id}",
+        title=f"OpenAI announces a new frontier model {external_id}",
         url=url or f"https://example.com/{external_id}",
         published_at=now,
         collected_at=now,
-        description="A factual, sufficiently detailed AI update.",
+        description="A factual, independently reportable AI release update.",
         source_categories=[Category.AI],
         popularity=popularity or {},
     )

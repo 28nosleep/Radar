@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from f117.adapters.reddit import RedditCollector, RedditOAuthUnauthorized
-from f117.adapters.rss import FeedFetchResult
+from f117.adapters.rss import FeedFetchResult, RSSFetchError
 from f117.domain import Category, CollectedItem, FeedSource
 
 
@@ -35,6 +35,7 @@ def test_reddit_post_normalization_keeps_discussion_metrics_and_text() -> None:
 
     assert item is not None
     assert item.popularity == {"reddit_upvotes": 80.0, "reddit_comments": 21.0}
+    assert item.qualitative_signals == ["reddit_api"]
     assert item.description == "Technical details"
     assert item.url.startswith("https://www.reddit.com/r/ControlProblem")
 
@@ -52,7 +53,8 @@ async def test_reddit_without_credentials_uses_rss_fallback() -> None:
 
     class RSS:
         async def fetch(self, rss_source, **kwargs):  # type: ignore[no-untyped-def]
-            assert str(rss_source.feed_url).endswith("/r/robotics/new.rss")
+            if not str(rss_source.feed_url).endswith("/r/robotics/new.rss"):
+                raise RSSFetchError("optional listing unavailable")
             return FeedFetchResult(
                 items=[
                     CollectedItem(
@@ -77,6 +79,53 @@ async def test_reddit_without_credentials_uses_rss_fallback() -> None:
     assert result.items[0].external_id == "abc123"
     assert result.items[0].subreddit == "robotics"
     assert result.items[0].popularity == {}
+    assert result.items[0].qualitative_signals == ["reddit_rss", "reddit_seen_new"]
+
+
+async def test_reddit_rss_merges_listing_presence_by_post_id() -> None:
+    source = FeedSource(
+        key="reddit",
+        name="Reddit",
+        kind="reddit",
+        feed_url="https://www.reddit.com",
+        reddit_subreddit="robotics",
+    )
+    collector = RedditCollector(timeout_seconds=1, user_agent="test")
+    calls: list[str] = []
+
+    class RSS:
+        async def fetch(self, rss_source, **kwargs):  # type: ignore[no-untyped-def]
+            url = str(rss_source.feed_url)
+            calls.append(url)
+            listing = url.rsplit("/", 1)[-1].removesuffix(".rss")
+            return FeedFetchResult(
+                items=[
+                    CollectedItem(
+                        external_id=f"atom-{listing}",
+                        source_key=source.key,
+                        source_name=source.name,
+                        source_reputation=source.reputation,
+                        title="Humanoid robot demonstrates a new capability",
+                        url="https://www.reddit.com/r/robotics/comments/AbC123/demo/",
+                        collected_at=datetime.now(UTC),
+                    )
+                ],
+                etag=None,
+                last_modified=None,
+            )
+
+    collector.rss = RSS()  # type: ignore[assignment]
+    result = await collector.fetch(source)
+
+    assert len(result.items) == 1
+    assert result.items[0].external_id == "abc123"
+    assert result.items[0].qualitative_signals == [
+        "reddit_rss",
+        "reddit_seen_hot",
+        "reddit_seen_new",
+        "reddit_seen_rising",
+    ]
+    assert [url.rsplit("/", 1)[-1] for url in calls] == ["new.rss", "hot.rss", "rising.rss"]
 
 
 async def test_reddit_api_401_uses_rss_fallback() -> None:

@@ -248,6 +248,7 @@ def normalize_item(item: CollectedItem) -> NormalizedItem:
         source_categories=list(item.source_categories),
         categories=[],
         popularity=dict(item.popularity),
+        qualitative_signals=sorted(set(item.qualitative_signals)),
         subreddit=clean_html(item.subreddit) or None,
         media_type=item.media_type,
         media_url=item.media_url.strip() if item.media_url else None,

@@ -22,15 +22,48 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://f117:f117@postgres:5432/f117"
     rss_catalog_path: Path = Path("config/feeds.json")
 
-    scheduler_interval_minutes: int = Field(default=180, ge=5)
+    collection_interval_minutes: int = Field(default=180, ge=5)
+    # Backwards-compatible override for deployments that still set the M1 name.
+    scheduler_interval_minutes: int | None = Field(default=None, ge=5)
     candidate_lookback_hours: int = Field(default=24, ge=1, le=168)
-    freshness_daily_max_age_days: int = Field(default=30, ge=1, le=365)
-    freshness_youtube_daily_max_age_days: int = Field(default=30, ge=1, le=365)
-    freshness_funny_wtf_max_age_days: int = Field(default=14, ge=1, le=365)
-    freshness_discovery_max_age_days: int = Field(default=14, ge=1, le=365)
+    freshness_daily_max_age_days: int = Field(default=3, ge=1, le=365)
+    freshness_youtube_daily_max_age_days: int = Field(default=3, ge=1, le=365)
+    freshness_funny_wtf_max_age_days: int = Field(default=7, ge=1, le=365)
+    freshness_discovery_max_age_days: int = Field(default=7, ge=1, le=365)
     dedup_lookback_days: int = Field(default=7, ge=1, le=30)
     dedup_title_threshold: float = Field(default=0.92, ge=0.8, le=1.0)
-    digest_top_n: int = Field(default=10, ge=1, le=20)
+    digest_max_items: int = Field(default=5, ge=1, le=20)
+    # Backwards-compatible override used by old configuration and callers.
+    digest_top_n: int | None = Field(default=None, ge=1, le=20)
+    digest_times: str = "09:00,15:00,21:00"
+    delivery_timezone: str = "Europe/Moscow"
+    minimum_delivery_score: float = Field(default=55.0, ge=0.0, le=100.0)
+    minimum_editorial_fit: float = Field(default=55.0, ge=0.0, le=100.0)
+    editorial_fit_weight: float = Field(default=0.65, ge=0.5, le=0.9)
+    urgent_delivery_enabled: bool = True
+    urgent_max_items: int = Field(default=2, ge=1, le=5)
+    urgent_min_delivery_score: float = Field(default=76.0, ge=0.0, le=100.0)
+    urgent_min_editorial_fit: float = Field(default=92.0, ge=0.0, le=100.0)
+
+    github_delivery_min_stars: int = Field(default=1000, ge=0)
+    github_delivery_min_star_velocity: float = Field(default=25.0, ge=0.0)
+    github_delivery_min_forks: int = Field(default=100, ge=0)
+    github_delivery_min_mentions: int = Field(default=2, ge=1)
+    github_exceptional_editorial_fit: float = Field(default=88.0, ge=0.0, le=100.0)
+    arxiv_min_editorial_fit: float = Field(default=72.0, ge=0.0, le=100.0)
+    youtube_delivery_min_views: int = Field(default=50_000, ge=0)
+    youtube_delivery_min_view_velocity: float = Field(default=2_000.0, ge=0.0)
+    youtube_delivery_min_likes: int = Field(default=1_000, ge=0)
+    youtube_delivery_min_mentions: int = Field(default=2, ge=1)
+    reddit_delivery_min_upvotes: int = Field(default=250, ge=0)
+    reddit_delivery_min_comments: int = Field(default=40, ge=0)
+    reddit_delivery_min_velocity: float = Field(default=20.0, ge=0.0)
+    reddit_delivery_min_mentions: int = Field(default=2, ge=1)
+    reddit_min_editorial_fit: float = Field(default=75.0, ge=0.0, le=100.0)
+    # RSS listings have no provider engagement metrics.  They need an explicit,
+    # stricter event path instead of being treated as a zero-score API post.
+    reddit_rss_min_editorial_fit: float = Field(default=80.0, ge=0.0, le=100.0)
+    reddit_rss_exceptional_editorial_fit: float = Field(default=85.0, ge=0.0, le=100.0)
 
     http_timeout_seconds: float = Field(default=20.0, ge=1.0, le=120.0)
     http_max_response_bytes: int = Field(default=5_000_000, ge=100_000)
@@ -99,6 +132,14 @@ class Settings(BaseSettings):
         if not isinstance(payload, list):
             raise ValueError("RSS catalog must be a JSON array")
         return [FeedSource.model_validate(item) for item in payload]
+
+    @property
+    def effective_collection_interval_minutes(self) -> int:
+        return self.scheduler_interval_minutes or self.collection_interval_minutes
+
+    @property
+    def effective_digest_max_items(self) -> int:
+        return self.digest_top_n or self.digest_max_items
 
 
 @lru_cache(maxsize=1)

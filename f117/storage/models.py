@@ -83,6 +83,7 @@ class MaterialModel(Base):
     media_source: Mapped[str | None] = mapped_column(String(120))
     categories: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     popularity: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False, default=dict)
+    qualitative_signals: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     # Raw provider observations are kept separate from the canonical aggregate.
     # This prevents an earlier aggregate from becoming a sticky input on refresh.
     raw_metrics: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False, default=dict)

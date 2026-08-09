@@ -209,6 +209,7 @@ class Repository:
                     media_source=item.media_source,
                     categories=[category.value for category in item.categories],
                     popularity=item.popularity,
+                    qualitative_signals=item.qualitative_signals,
                     raw_metrics=item.popularity,
                     content_hash=item.content_hash,
                     normalized_title=item.normalized_title,
@@ -307,6 +308,9 @@ class Repository:
                     row.editorial_retry_at = None
                     row.editorial_error = None
                     row.editorial_failed_at = None
+            row.qualitative_signals = sorted(
+                set(row.qualitative_signals).union(item.qualitative_signals)
+            )
             await self._record_metrics(session, row, item.popularity, captured_at)
             await session.commit()
 
@@ -835,6 +839,7 @@ class Repository:
             source_categories=[Category(value) for value in row.source.default_categories],
             categories=[Category(value) for value in row.categories],
             popularity=row.popularity,
+            qualitative_signals=row.qualitative_signals,
             content_hash=row.content_hash,
             normalized_title=row.normalized_title,
         )

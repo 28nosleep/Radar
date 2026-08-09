@@ -5,6 +5,7 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 from uuid import UUID, uuid4
 
 from f117.adapters.collectors import SourceCollector
@@ -24,6 +25,7 @@ from f117.pipeline.classifier import classify_item
 from f117.pipeline.deduplicator import duplicate_reason, find_duplicate
 from f117.pipeline.discovery import DiscoveryConfig, assess_discovery
 from f117.pipeline.diversity import DiversityConfig, diversify
+from f117.pipeline.editorial import EditorialConfig, assess_editorial_fit
 from f117.pipeline.normalizer import normalize_item
 from f117.pipeline.ranking import RankingConfig, score_material
 from f117.storage.repository import Repository, SourceState
@@ -98,13 +100,42 @@ class DigestService:
             min_growth_absolute=settings.discovery_min_growth_absolute,
             hidden_gem_max_popularity=settings.discovery_hidden_gem_max_popularity,
         )
+        self.editorial_config = EditorialConfig(
+            fit_weight=settings.editorial_fit_weight,
+            minimum_fit=settings.minimum_editorial_fit,
+            minimum_delivery_score=settings.minimum_delivery_score,
+            github_min_stars=settings.github_delivery_min_stars,
+            github_min_star_velocity=settings.github_delivery_min_star_velocity,
+            github_min_forks=settings.github_delivery_min_forks,
+            github_min_mentions=settings.github_delivery_min_mentions,
+            github_exceptional_fit=settings.github_exceptional_editorial_fit,
+            arxiv_min_fit=settings.arxiv_min_editorial_fit,
+            youtube_min_views=settings.youtube_delivery_min_views,
+            youtube_min_view_velocity=settings.youtube_delivery_min_view_velocity,
+            youtube_min_likes=settings.youtube_delivery_min_likes,
+            youtube_min_mentions=settings.youtube_delivery_min_mentions,
+            reddit_min_upvotes=settings.reddit_delivery_min_upvotes,
+            reddit_min_comments=settings.reddit_delivery_min_comments,
+            reddit_min_velocity=settings.reddit_delivery_min_velocity,
+            reddit_min_mentions=settings.reddit_delivery_min_mentions,
+            reddit_min_fit=settings.reddit_min_editorial_fit,
+            reddit_rss_min_fit=settings.reddit_rss_min_editorial_fit,
+            reddit_rss_exceptional_fit=settings.reddit_rss_exceptional_editorial_fit,
+            urgent_min_fit=settings.urgent_min_editorial_fit,
+            urgent_min_delivery_score=settings.urgent_min_delivery_score,
+        )
         self.media_fetcher = MetadataMediaFetcher(
             timeout_seconds=settings.metadata_fetch_timeout_seconds,
             max_response_bytes=settings.metadata_fetch_max_response_bytes,
             user_agent=settings.http_user_agent,
         )
 
-    async def run_once(self) -> RunSummary:
+    async def run_once(
+        self,
+        *,
+        collect: bool = True,
+        delivery_mode: Literal["digest", "urgent", "none"] = "digest",
+    ) -> RunSummary:
         async with self.repository.run_lock() as acquired:
             if not acquired:
                 logger.info("Skipped digest run because another Radar owner holds the lock")
@@ -119,9 +150,14 @@ class DigestService:
                     delivered_count=0,
                     editorial_failure_count=0,
                 )
-            return await self._run_once_owned()
+            return await self._run_once_owned(collect=collect, delivery_mode=delivery_mode)
 
-    async def _run_once_owned(self) -> RunSummary:
+    async def _run_once_owned(
+        self,
+        *,
+        collect: bool,
+        delivery_mode: Literal["digest", "urgent", "none"],
+    ) -> RunSummary:
         run_id = await self.repository.create_digest_run(dry_run=self.settings.dry_run)
         counts = {
             "collected_count": 0,
@@ -137,7 +173,7 @@ class DigestService:
         try:
             source_results: Sequence[_SourceResult] = ()
             recent: list[StoredMaterial] = []
-            if not self.settings.dry_run:
+            if collect and not self.settings.dry_run:
                 source_states = await self.repository.sync_sources(
                     self.settings.load_feed_sources()
                 )
@@ -258,6 +294,32 @@ class DigestService:
                 for material in ranked
             ]
             candidate_by_id = {candidate.id: candidate for candidate in candidates}
+            editorial = {
+                material.material_id: assess_editorial_fit(
+                    candidate_by_id[material.material_id],
+                    material,
+                    config=self.editorial_config,
+                )
+                for material in ranked
+            }
+            ranked = [
+                material.model_copy(
+                    update={
+                        "editorial_fit": editorial[material.material_id].fit,
+                        "editorial_reasons": editorial[material.material_id].reasons,
+                        "delivery_score": editorial[material.material_id].delivery_score,
+                        "urgent": editorial[material.material_id].urgent,
+                        "score_reasons": [
+                            *material.score_reasons,
+                            *(
+                                f"editorial: {reason}"
+                                for reason in editorial[material.material_id].reasons
+                            ),
+                        ],
+                    }
+                )
+                for material in ranked
+            ]
             ranked = [
                 material
                 for material in ranked
@@ -267,20 +329,31 @@ class DigestService:
             await self.repository.save_discovery_scores(
                 {material.material_id: material.discovery_score for material in ranked}
             )
-            selected = _select_for_delivery(
-                ranked,
-                candidates,
-                top_n=self.settings.digest_top_n,
-                discovery_selection_boost=self.settings.discovery_selection_boost,
-                editorial_retry_slots=self.settings.editorial_retry_slots,
-                diversity_config=DiversityConfig(
-                    max_per_source=self.settings.diversity_max_per_source,
-                    max_per_entity=self.settings.diversity_max_per_entity,
-                    max_per_category=self.settings.diversity_max_per_category,
-                    strong_score_threshold=self.settings.diversity_strong_score_threshold,
+            selected: list[RankedMaterial] = []
+            if delivery_mode != "none":
+                selected = _select_for_delivery(
+                    ranked,
+                    candidates,
+                    top_n=(
+                        self.settings.urgent_max_items
+                        if delivery_mode == "urgent"
+                        else self.settings.effective_digest_max_items
+                    ),
                     discovery_selection_boost=self.settings.discovery_selection_boost,
-                ),
-            )
+                    editorial_retry_slots=self.settings.editorial_retry_slots,
+                    diversity_config=DiversityConfig(
+                        max_per_source=self.settings.diversity_max_per_source,
+                        max_per_entity=self.settings.diversity_max_per_entity,
+                        max_per_category=self.settings.diversity_max_per_category,
+                        strong_score_threshold=self.settings.diversity_strong_score_threshold,
+                        discovery_selection_boost=self.settings.discovery_selection_boost,
+                        editorial_fit_weight=self.settings.editorial_fit_weight,
+                    ),
+                    minimum_delivery_score=self.settings.minimum_delivery_score,
+                    minimum_editorial_fit=self.settings.minimum_editorial_fit,
+                    editorial_fit_weight=self.settings.editorial_fit_weight,
+                    urgent_only=delivery_mode == "urgent",
+                )
             selected = await self._enrich_final_media(selected)
             counts["selected_count"] = len(selected)
             await self.repository.record_selection([material.material_id for material in selected])
@@ -564,6 +637,10 @@ def _select_for_delivery(
     discovery_selection_boost: float = 0.0,
     editorial_retry_slots: int = 2,
     diversity_config: DiversityConfig | None = None,
+    minimum_delivery_score: float = 0.0,
+    minimum_editorial_fit: float = 0.0,
+    editorial_fit_weight: float = 0.0,
+    urgent_only: bool = False,
 ) -> list[RankedMaterial]:
     """Reserve the delivery queue before choosing fresh editorial candidates.
 
@@ -573,6 +650,13 @@ def _select_for_delivery(
     """
 
     candidate_by_id = {candidate.id: candidate for candidate in candidates}
+    ranked = [
+        material
+        for material in ranked
+        if material.delivery_score >= minimum_delivery_score
+        and material.editorial_fit >= minimum_editorial_fit
+        and (not urgent_only or material.urgent)
+    ]
     retry_queue = sorted(
         (
             material
@@ -610,6 +694,7 @@ def _select_for_delivery(
                 material,
                 candidate_by_id[material.material_id],
                 discovery_selection_boost,
+                editorial_fit_weight,
             ),
             material.score,
             material.published_at,
@@ -640,14 +725,23 @@ def _select_for_delivery(
 
 
 def _selection_score(
-    material: RankedMaterial, candidate: StoredMaterial, discovery_selection_boost: float
+    material: RankedMaterial,
+    candidate: StoredMaterial,
+    discovery_selection_boost: float,
+    editorial_fit_weight: float = 0.0,
 ) -> float:
     """Keep viral unrelated material from buying a TOP position via discovery alone."""
 
+    base = material.score
+    if editorial_fit_weight:
+        base = (
+            material.score * (1.0 - editorial_fit_weight)
+            + material.editorial_fit * editorial_fit_weight
+        )
     boost = discovery_selection_boost
     if not candidate.item.categories or set(candidate.item.categories) == {Category.OTHER}:
         boost *= 0.20
-    return material.score + material.discovery_score * boost
+    return base + material.discovery_score * boost
 
 
 def _is_due_editorial_retry(material: StoredMaterial, now: datetime) -> bool:

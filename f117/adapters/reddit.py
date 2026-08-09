@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import aiohttp
 
@@ -120,37 +120,61 @@ class RedditCollector:
     async def _fetch_rss_fallback(
         self, source: FeedSource, *, session: aiohttp.ClientSession | None
     ) -> FeedFetchResult:
-        """Read-only public Atom fallback, used only while OAuth is unavailable."""
+        """Read public listing feeds without fabricating unavailable engagement metrics."""
 
         assert source.reddit_subreddit is not None
-        rss_source = source.model_copy(
-            update={"feed_url": f"https://www.reddit.com/r/{source.reddit_subreddit}/new.rss"}
-        )
-        try:
-            result = await self.rss.fetch(rss_source, session=session)
-        except RSSFetchError as exc:
-            self.logger.warning("Reddit RSS fallback skipped for %s: %s", source.key, exc)
-            return FeedFetchResult(items=[], etag=None, last_modified=None)
-        items: list[CollectedItem] = []
-        for item in result.items:
-            post_id = _reddit_post_id(item.url)
-            if post_id is None:
+        listings = _rss_listings(source)
+        merged: dict[str, CollectedItem] = {}
+        etag: str | None = None
+        last_modified: str | None = None
+        partial = False
+
+        for listing in listings:
+            rss_source = source.model_copy(
+                update={
+                    "feed_url": f"https://www.reddit.com/r/{source.reddit_subreddit}/{listing}.rss"
+                }
+            )
+            try:
+                result = await self.rss.fetch(rss_source, session=session)
+            except RSSFetchError as exc:
+                # ``new`` is the durable baseline.  Optional listing feeds are
+                # allowed to fail independently because Reddit does not promise
+                # the same availability for every Atom view.
+                level = logging.WARNING if listing == "new" else logging.INFO
+                self.logger.log(
+                    level,
+                    "Reddit RSS %s listing skipped for %s: %s",
+                    listing,
+                    source.key,
+                    exc,
+                )
                 continue
-            items.append(
-                item.model_copy(
+
+            etag = etag or result.etag
+            last_modified = last_modified or result.last_modified
+            partial = partial or result.partial
+            for item in result.items:
+                post_id = _reddit_post_id(item.url)
+                if post_id is None:
+                    continue
+                signals = {"reddit_rss", f"reddit_seen_{listing}"}
+                previous = merged.get(post_id)
+                if previous is not None:
+                    signals.update(previous.qualitative_signals)
+                merged[post_id] = item.model_copy(
                     update={
                         "external_id": post_id,
                         "subreddit": source.reddit_subreddit,
                         "media_source": item.media_source and f"reddit:{item.media_source}",
+                        "qualitative_signals": sorted(signals),
                     }
                 )
-            )
         return FeedFetchResult(
-            items=items,
-            etag=result.etag,
-            last_modified=result.last_modified,
-            not_modified=result.not_modified,
-            partial=result.partial,
+            items=list(merged.values()),
+            etag=etag,
+            last_modified=last_modified,
+            partial=partial,
         )
 
     @staticmethod
@@ -183,6 +207,7 @@ class RedditCollector:
                 "reddit_upvotes": float(post.get("score") or 0),
                 "reddit_comments": float(post.get("num_comments") or 0),
             },
+            qualitative_signals=["reddit_api"],
             subreddit=str(post.get("subreddit") or source.reddit_subreddit or "") or None,
             media_type=_reddit_media_type(post),
             media_url=_reddit_media_url(post),
@@ -198,6 +223,17 @@ _POST_ID_RE = re.compile(r"/comments/([a-z0-9]+)(?:/|$)", re.IGNORECASE)
 def _reddit_post_id(url: str) -> str | None:
     match = _POST_ID_RE.search(url)
     return match.group(1).lower() if match else None
+
+
+def _rss_listings(source: FeedSource) -> list[Literal["new", "hot", "rising"]]:
+    """Return configured RSS listing views with ``new`` as the resilient baseline."""
+
+    configured: list[Literal["new", "hot", "rising"]] = list(
+        dict.fromkeys(source.reddit_rss_listings)
+    )
+    if "new" not in configured:
+        configured.insert(0, "new")
+    return configured
 
 
 def _reddit_thumbnail(post: dict[str, Any]) -> str | None:

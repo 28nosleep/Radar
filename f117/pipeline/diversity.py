@@ -34,6 +34,7 @@ class DiversityConfig:
     close_score_gap: float = 8.0
     discovery_selection_boost: float = 0.0
     other_discovery_boost_factor: float = 0.20
+    editorial_fit_weight: float = 0.0
 
 
 def diversify(
@@ -82,10 +83,16 @@ def diversify(
 
 
 def _selection_score(material: RankedMaterial, config: DiversityConfig) -> float:
+    base = material.score
+    if config.editorial_fit_weight:
+        base = (
+            material.score * (1.0 - config.editorial_fit_weight)
+            + material.editorial_fit * config.editorial_fit_weight
+        )
     boost = config.discovery_selection_boost
     if not material.categories or set(material.categories) == {Category.OTHER}:
         boost *= config.other_discovery_boost_factor
-    return material.score + material.discovery_score * boost
+    return base + material.discovery_score * boost
 
 
 def _same_cap_bucket(a: RankedMaterial, b: RankedMaterial) -> bool:

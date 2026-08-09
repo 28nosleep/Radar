@@ -78,3 +78,9 @@ def test_other_is_removed_when_a_source_default_is_specific() -> None:
     )
 
     assert classified.categories == [Category.ROBOTICS]
+
+
+def test_cyberculture_is_a_first_class_category() -> None:
+    assert classify_text("Apple releases a Neuromancer adaptation trailer") == [
+        Category.CYBERCULTURE
+    ]

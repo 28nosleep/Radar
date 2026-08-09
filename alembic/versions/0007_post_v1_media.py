@@ -5,9 +5,9 @@ Revises: 0006_release_fixes
 Create Date: 2026-08-09
 """
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision = "0007_post_v1_media"
 down_revision = "0006_release_fixes"
@@ -18,7 +18,8 @@ depends_on = None
 def upgrade() -> None:
     op.add_column("materials", sa.Column("subreddit", sa.String(length=160), nullable=True))
     op.add_column(
-        "materials", sa.Column("media_type", sa.String(length=16), nullable=False, server_default="none")
+        "materials",
+        sa.Column("media_type", sa.String(length=16), nullable=False, server_default="none"),
     )
     op.add_column("materials", sa.Column("media_url", sa.Text(), nullable=True))
     op.add_column("materials", sa.Column("thumbnail_url", sa.Text(), nullable=True))

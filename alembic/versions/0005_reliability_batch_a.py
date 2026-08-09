@@ -18,7 +18,8 @@ depends_on: Sequence[str] | None = None
 
 def upgrade() -> None:
     op.add_column(
-        "materials", sa.Column("editorial_attempts", sa.Integer(), server_default="0", nullable=False)
+        "materials",
+        sa.Column("editorial_attempts", sa.Integer(), server_default="0", nullable=False),
     )
     op.add_column("materials", sa.Column("editorial_retry_at", sa.DateTime(timezone=True)))
     op.add_column("materials", sa.Column("editorial_error", sa.Text()))

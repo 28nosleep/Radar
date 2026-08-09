@@ -48,6 +48,7 @@ def _item(
     description: str = "Initial description",
     url: str = "https://example.com/project",
     metrics: dict[str, float] | None = None,
+    qualitative_signals: list[str] | None = None,
 ) -> NormalizedItem:
     now = datetime.now(UTC)
     return NormalizedItem(
@@ -64,6 +65,7 @@ def _item(
         source_categories=[Category.AI],
         categories=[Category.AI],
         popularity=metrics or {},
+        qualitative_signals=qualitative_signals or [],
         content_hash=(title + description).encode().hex()[:64].ljust(64, "0"),
         normalized_title=title.casefold(),
     )
@@ -145,3 +147,28 @@ async def test_duplicate_metrics_aggregate_on_root_and_reddit_is_one_family(
     assert root_row.item.popularity["reddit_upvotes"] == 700
     assert root_row.independent_mentions == 3
     assert history[-1].metrics["github_stars"] == 2_000
+
+
+@pytest.mark.asyncio
+async def test_qualitative_signals_accumulate_without_creating_metric_snapshots(
+    repository: Repository,
+) -> None:
+    source = (await repository.sync_sources([_source("reddit-ai", "Reddit AI")]))[0]
+    first = _item(
+        "reddit-ai",
+        "post-a",
+        qualitative_signals=["reddit_rss", "reddit_seen_new"],
+    )
+    await repository.add_material(source.id, first)
+    await repository.refresh_material(
+        source.id,
+        first.model_copy(update={"qualitative_signals": ["reddit_rss", "reddit_seen_hot"]}),
+    )
+
+    stored = (await repository.recent_materials(days=1))[0]
+    assert stored.item.qualitative_signals == [
+        "reddit_rss",
+        "reddit_seen_hot",
+        "reddit_seen_new",
+    ]
+    assert await repository.metric_history(stored.id) == []
