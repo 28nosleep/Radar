@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     discovery_hidden_gem_max_popularity: float = Field(default=2000.0, ge=1.0)
     discovery_selection_boost: float = Field(default=0.2, ge=0.0, le=0.5)
 
+    diversity_max_per_source: int = Field(default=2, ge=1, le=10)
+    diversity_max_per_entity: int = Field(default=2, ge=1, le=10)
+    diversity_max_per_category: int = Field(default=4, ge=1, le=20)
+    diversity_strong_score_threshold: float = Field(default=85.0, ge=0.0, le=100.0)
+
     openai_enabled: bool = False
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-5.6-terra"
@@ -71,6 +76,8 @@ class Settings(BaseSettings):
     telegram_chat_id: str | None = None
     telegram_api_base: str = "https://api.telegram.org"
     telegram_format: Literal["editorial", "debug"] = "editorial"
+    telegram_feedback_enabled: bool = True
+    telegram_feedback_poll_seconds: int = Field(default=10, ge=2, le=60)
 
     dry_run: bool = True
     log_level: str = "INFO"

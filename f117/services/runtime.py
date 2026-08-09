@@ -12,7 +12,12 @@ from f117.adapters.openai_editorial import (
 )
 from f117.adapters.reddit import RedditCollector
 from f117.adapters.rss import RSSCollector
-from f117.adapters.telegram import DigestNotifier, DryRunNotifier, TelegramNotifier
+from f117.adapters.telegram import (
+    DigestNotifier,
+    DryRunNotifier,
+    TelegramFeedbackPoller,
+    TelegramNotifier,
+)
 from f117.adapters.youtube import YouTubeCollector
 from f117.config import Settings
 from f117.services.digest import DigestService
@@ -132,6 +137,23 @@ def build_digest_service(settings: Settings, repository: Repository) -> DigestSe
         collector=collector,
         enricher=enricher,
         notifier=notifier,
+    )
+
+
+def build_feedback_poller(
+    settings: Settings, repository: Repository
+) -> TelegramFeedbackPoller | None:
+    if not settings.telegram_feedback_enabled or not settings.telegram_enabled:
+        return None
+    token = _secret_value(settings.telegram_bot_token)
+    if not token or settings.telegram_chat_id is None:
+        raise ConfigurationError("Telegram credentials are missing for feedback polling")
+    return TelegramFeedbackPoller(
+        bot_token=token,
+        chat_id=settings.telegram_chat_id,
+        store=repository,
+        api_base=settings.telegram_api_base,
+        timeout_seconds=settings.http_timeout_seconds,
     )
 
 

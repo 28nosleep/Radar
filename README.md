@@ -19,12 +19,13 @@ Every milestone ends with a runnable system, tests, a migration, and documentati
    the entire downstream pipeline remains unchanged.
 3. **M3 — GitHub, Reddit, and YouTube (complete).** API collectors and metric snapshots
    are added. X is not part of this milestone.
-4. **M4 — Discovery (current).** Star/upvote/comment/view deltas, growth velocity,
+4. **M4 — Discovery (complete).** Star/upvote/comment/view deltas, growth velocity,
    a cross-source signal, and hidden findings — without ML or GPT.
-5. **M5 — Personal tuning.** Telegram feedback, manual adjustment of weights and the
-   catalog, and compact CLI status output. No automatic learning or heavy admin panel.
+5. **M5 — Quality & Feedback (current).** Telegram feedback, editorial diversity,
+   source-quality and discovery-calibration reports. Feedback is stored for later
+   review; it never changes ranking automatically.
 
-## M4 architecture
+## M5 architecture
 
 This is a modular monolith with one scheduler process. Queues, Redis, Celery/ARQ,
 FastAPI, and separate services are unnecessary. Runs do not overlap; sources within a
@@ -139,6 +140,34 @@ or YouTube.
 title, short summary, “Why it matters” line, source, tags, and link. Service scores and
 formula breakdowns are not included in the message. For diagnostics, set
 `F117_TELEGRAM_FORMAT=debug`; those details are then appended to the card.
+
+Every real editorial card also has three inline buttons: `👍 Полезно`, `👎 Мимо`, and
+`⭐ В пост`. The bot accepts callbacks only from the configured personal chat. One latest
+verdict is stored per material; a later click replaces the previous verdict rather than
+creating a duplicate. The scheduler polls callbacks every 10 seconds by default; use
+`radar poll-feedback` for one safe manual pass. Feedback is deliberately not used to
+change ranking in M5.
+
+## Quality and calibration reports
+
+Use these local CLI reports after collecting some real history:
+
+```bash
+radar quality-report --days 7
+radar discovery-report --days 7
+```
+
+The quality report breaks down collected, TOP-selected, sent, useful, miss, and post-fit
+materials per source, plus average importance and discovery scores. The discovery report
+shows distributions of importance score, discovery score, and growth per hour, together
+with current rising and hidden-gem candidates. It explicitly reports when the data is too
+small for meaningful calibration.
+
+Before editorial enrichment, a soft diversity layer prefers a mix of sources, recognized
+companies/projects, and categories. Default caps are two cards per source, two per known
+entity, and four per category. If no equally worthy alternative exists—or a material's
+score reaches the configured strong threshold—the material is still included. Cached,
+already-enriched retry cards retain their delivery priority.
 
 ## Deduplication and score
 

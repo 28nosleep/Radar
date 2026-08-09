@@ -16,6 +16,7 @@ from f117.domain import EditorialCard, RankedMaterial, StoredMaterial
 from f117.pipeline.classifier import classify_item
 from f117.pipeline.deduplicator import find_duplicate
 from f117.pipeline.discovery import DiscoveryConfig, assess_discovery
+from f117.pipeline.diversity import DiversityConfig, diversify
 from f117.pipeline.normalizer import normalize_item
 from f117.pipeline.ranking import RankingConfig, score_material
 from f117.storage.repository import Repository, SourceState
@@ -208,8 +209,15 @@ class DigestService:
                 candidates,
                 top_n=self.settings.digest_top_n,
                 discovery_selection_boost=self.settings.discovery_selection_boost,
+                diversity_config=DiversityConfig(
+                    max_per_source=self.settings.diversity_max_per_source,
+                    max_per_entity=self.settings.diversity_max_per_entity,
+                    max_per_category=self.settings.diversity_max_per_category,
+                    strong_score_threshold=self.settings.diversity_strong_score_threshold,
+                ),
             )
             counts["selected_count"] = len(selected)
+            await self.repository.record_selection([material.material_id for material in selected])
 
             cards = await self._editorial_cards(selected, candidates)
             counts["editorial_failure_count"] = sum(
@@ -350,6 +358,7 @@ def _select_for_delivery(
     *,
     top_n: int,
     discovery_selection_boost: float = 0.0,
+    diversity_config: DiversityConfig | None = None,
 ) -> list[RankedMaterial]:
     """Reserve the delivery queue before choosing fresh editorial candidates.
 
@@ -384,4 +393,6 @@ def _select_for_delivery(
         ),
         reverse=True,
     )
+    if diversity_config is not None:
+        fresh = diversify(fresh, config=diversity_config)
     return retry_queue[:top_n] + fresh[:available_slots]

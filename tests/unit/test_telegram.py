@@ -10,6 +10,7 @@ from f117.adapters.telegram import (
     TELEGRAM_TEXT_LIMIT,
     DeliveryReceipt,
     TelegramError,
+    TelegramFeedbackPoller,
     TelegramNotifier,
     group_cards,
     render_card,
@@ -160,6 +161,12 @@ async def test_telegram_adapter_sends_intro_and_one_message_per_card(
     reply_markup = requests[1]["reply_markup"]
     assert isinstance(reply_markup, dict)
     assert reply_markup["inline_keyboard"][0][0]["url"] == cards[0].material.url
+    assert reply_markup["inline_keyboard"][1][0]["text"] == "👍 Полезно"
+    assert reply_markup["inline_keyboard"][1][2]["text"] == "⭐ В пост"
+    assert (
+        str(cards[0].material.material_id)
+        in reply_markup["inline_keyboard"][1][0]["callback_data"]
+    )
 
 
 @pytest.mark.asyncio
@@ -218,3 +225,88 @@ async def test_telegram_reports_each_success_before_a_later_card_fails(
         )
 
     assert delivered == [cards[0].material.material_id]
+
+
+@pytest.mark.asyncio
+async def test_feedback_poller_processes_owner_callback_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    material_id = uuid4()
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    class Store:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def record_feedback(self, **values: object) -> object:
+            self.calls.append(values)
+            return object()
+
+        async def latest_telegram_update_id(self) -> int | None:
+            return None
+
+        async def mark_telegram_update_processed(self, update_id: int) -> None:
+            assert update_id == 100
+
+    class Response:
+        status = 200
+
+        async def __aenter__(self) -> Response:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def json(self, *, content_type: object = None) -> dict[str, object]:
+            del content_type
+            if len(requests) == 1:
+                return {
+                    "ok": True,
+                    "result": [
+                        {
+                            "update_id": 99,
+                            "callback_query": {
+                                "id": "callback-1",
+                                "data": f"feedback:{material_id}:useful",
+                                "message": {"chat": {"id": 123}},
+                            },
+                        },
+                        {
+                            "update_id": 100,
+                            "callback_query": {
+                                "id": "foreign",
+                                "data": f"feedback:{material_id}:miss",
+                                "message": {"chat": {"id": 999}},
+                            },
+                        },
+                    ],
+                }
+            return {"ok": True, "result": True}
+
+    class Session:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        async def __aenter__(self) -> Session:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        def post(self, url: str, *, json: dict[str, object]) -> Response:
+            requests.append((url, json))
+            return Response()
+
+    monkeypatch.setattr(
+        "f117.adapters.telegram.aiohttp.ClientSession", lambda **kwargs: Session(**kwargs)
+    )
+    store = Store()
+    processed = await TelegramFeedbackPoller(
+        bot_token="token", chat_id="123", store=store, api_base="https://telegram.invalid"
+    ).poll_once()
+
+    assert processed == 1
+    assert store.calls == [
+        {"material_id": material_id, "feedback_type": "useful", "telegram_update_id": 99}
+    ]
+    assert requests[1][0].endswith("/answerCallbackQuery")

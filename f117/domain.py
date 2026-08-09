@@ -21,6 +21,12 @@ class Category(StrEnum):
     OTHER = "other"
 
 
+class FeedbackType(StrEnum):
+    USEFUL = "useful"
+    MISS = "miss"
+    POST = "post"
+
+
 class FeedSource(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -142,3 +148,15 @@ class EditorialCard(BaseModel):
     llm_model: str | None = None
     usage: dict[str, int] = Field(default_factory=dict)
     editorial_error: str | None = None
+
+
+class MaterialFeedback(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    material_id: UUID
+    feedback_type: FeedbackType
+    updated_at: datetime
+    source_key: str
+    categories: list[Category] = Field(default_factory=list)
+    importance_score: float
+    discovery_score: float

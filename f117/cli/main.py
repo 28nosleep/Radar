@@ -10,10 +10,13 @@ from time import monotonic
 from typing import NoReturn
 
 from f117 import __version__
+from f117.adapters.telegram import TelegramFeedbackPoller
 from f117.config import Settings
+from f117.services.reports import discovery_report, quality_report
 from f117.services.runtime import (
     ConfigurationError,
     build_digest_service,
+    build_feedback_poller,
     validate_settings,
 )
 from f117.storage.database import Database
@@ -33,6 +36,13 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("scheduler", help="run immediately and then on an interval")
     subparsers.add_parser("status", help="print compact database counters")
     subparsers.add_parser("validate-config", help="validate .env and the source catalog")
+    quality = subparsers.add_parser(
+        "quality-report", help="show source quality from owner feedback"
+    )
+    quality.add_argument("--days", type=_positive_days, default=7)
+    discovery = subparsers.add_parser("discovery-report", help="show discovery score calibration")
+    discovery.add_argument("--days", type=_positive_days, default=7)
+    subparsers.add_parser("poll-feedback", help="process pending Telegram inline-button feedback")
     return parser
 
 
@@ -68,6 +78,12 @@ def main() -> None:
         asyncio.run(_run_scheduler(settings))
     elif args.command == "status":
         asyncio.run(_show_status(settings))
+    elif args.command == "quality-report":
+        asyncio.run(_show_quality_report(settings, days=args.days))
+    elif args.command == "discovery-report":
+        asyncio.run(_show_discovery_report(settings, days=args.days))
+    elif args.command == "poll-feedback":
+        asyncio.run(_poll_feedback_once(settings))
 
 
 async def _run_once(settings: Settings) -> None:
@@ -90,10 +106,46 @@ async def _show_status(settings: Settings) -> None:
         await database.dispose()
 
 
+async def _show_quality_report(settings: Settings, *, days: int) -> None:
+    database = Database(settings.database_url)
+    try:
+        report = await quality_report(Repository(database), days=days)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    finally:
+        await database.dispose()
+
+
+async def _show_discovery_report(settings: Settings, *, days: int) -> None:
+    database = Database(settings.database_url)
+    try:
+        report = await discovery_report(
+            Repository(database),
+            days=days,
+            rising_threshold=settings.discovery_rising_threshold,
+            hidden_gem_max_popularity=settings.discovery_hidden_gem_max_popularity,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    finally:
+        await database.dispose()
+
+
+async def _poll_feedback_once(settings: Settings) -> None:
+    database = Database(settings.database_url)
+    try:
+        poller = build_feedback_poller(settings, Repository(database))
+        if poller is None:
+            print(json.dumps({"processed": 0, "reason": "Telegram feedback is disabled"}))
+            return
+        print(json.dumps({"processed": await poller.poll_once()}))
+    finally:
+        await database.dispose()
+
+
 async def _run_scheduler(settings: Settings) -> None:
     database = Database(settings.database_url)
     repository = Repository(database)
     service = build_digest_service(settings, repository)
+    feedback_poller = build_feedback_poller(settings, repository)
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for stop_signal in (signal.SIGINT, signal.SIGTERM):
@@ -106,6 +158,13 @@ async def _run_scheduler(settings: Settings) -> None:
         "Scheduler started; interval=%s minutes, dry_run=%s",
         settings.scheduler_interval_minutes,
         settings.dry_run,
+    )
+    feedback_task = (
+        asyncio.create_task(
+            _feedback_loop(feedback_poller, settings.telegram_feedback_poll_seconds)
+        )
+        if feedback_poller is not None
+        else None
     )
     try:
         while not stop_event.is_set():
@@ -124,8 +183,22 @@ async def _run_scheduler(settings: Settings) -> None:
             except TimeoutError:
                 continue
     finally:
+        if feedback_task is not None:
+            feedback_task.cancel()
+            await asyncio.gather(feedback_task, return_exceptions=True)
         await database.dispose()
         logger.info("Scheduler stopped")
+
+
+async def _feedback_loop(poller: TelegramFeedbackPoller, interval_seconds: int) -> None:
+    while True:
+        try:
+            processed = await poller.poll_once()
+            if processed:
+                logger.info("Processed %s Telegram feedback updates", processed)
+        except Exception:
+            logger.exception("Telegram feedback polling failed; will retry")
+        await asyncio.sleep(interval_seconds)
 
 
 def _configure_logging(level: str) -> None:
@@ -138,6 +211,13 @@ def _configure_logging(level: str) -> None:
 
 def _configuration_exit(exc: ConfigurationError) -> NoReturn:
     raise SystemExit(f"Invalid Radar configuration:\n{exc}")
+
+
+def _positive_days(value: str) -> int:
+    days = int(value)
+    if days < 1 or days > 365:
+        raise argparse.ArgumentTypeError("days must be between 1 and 365")
+    return days
 
 
 if __name__ == "__main__":

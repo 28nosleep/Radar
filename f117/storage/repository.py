@@ -11,7 +11,9 @@ from sqlalchemy.orm import selectinload
 from f117.domain import (
     Category,
     EditorialEnrichment,
+    FeedbackType,
     FeedSource,
+    MaterialFeedback,
     MetricSnapshot,
     NormalizedItem,
     RankedMaterial,
@@ -21,9 +23,11 @@ from f117.storage.database import Database
 from f117.storage.models import (
     DeliveryModel,
     DigestRunModel,
+    FeedbackModel,
     MaterialModel,
     MetricSnapshotModel,
     SourceModel,
+    TelegramUpdateModel,
 )
 
 
@@ -277,6 +281,17 @@ class Repository:
                 )
             await session.commit()
 
+    async def record_selection(self, material_ids: list[UUID]) -> None:
+        if not material_ids:
+            return
+        async with self.database.session() as session:
+            await session.execute(
+                update(MaterialModel)
+                .where(MaterialModel.id.in_(material_ids))
+                .values(selected_at=datetime.now(UTC))
+            )
+            await session.commit()
+
     async def digest_candidates(self, *, lookback_hours: int) -> list[StoredMaterial]:
         since = datetime.now(UTC) - timedelta(hours=lookback_hours)
         async with self.database.session() as session:
@@ -384,6 +399,106 @@ class Repository:
                     .values(delivered_at=sent_at)
                 )
             await session.commit()
+
+    async def record_feedback(
+        self,
+        *,
+        material_id: UUID,
+        feedback_type: FeedbackType,
+        telegram_update_id: int | None = None,
+    ) -> MaterialFeedback | None:
+        """Store one owner's latest verdict for a material, atomically.
+
+        A Telegram update ID makes polling idempotent. The unique material constraint
+        deliberately turns repeated button presses into an update rather than history.
+        """
+
+        now = datetime.now(UTC)
+        async with self.database.session() as session:
+            if telegram_update_id is not None:
+                if await session.get(TelegramUpdateModel, telegram_update_id) is not None:
+                    return None
+                session.add(TelegramUpdateModel(update_id=telegram_update_id))
+
+            material = await session.scalar(
+                select(MaterialModel)
+                .where(MaterialModel.id == material_id)
+                .options(selectinload(MaterialModel.source))
+            )
+            if material is None:
+                await session.rollback()
+                return None
+
+            feedback = await session.scalar(
+                select(FeedbackModel).where(FeedbackModel.material_id == material_id)
+            )
+            values = {
+                "feedback_type": feedback_type.value,
+                "source_key": material.source.key,
+                "categories": list(material.categories),
+                "importance_score": material.score,
+                "discovery_score": material.discovery_score,
+                "updated_at": now,
+            }
+            if feedback is None:
+                feedback = FeedbackModel(material_id=material_id, **values)
+                session.add(feedback)
+            else:
+                for key, value in values.items():
+                    setattr(feedback, key, value)
+            await session.flush()
+            result = MaterialFeedback(
+                material_id=feedback.material_id,
+                feedback_type=FeedbackType(feedback.feedback_type),
+                updated_at=feedback.updated_at,
+                source_key=feedback.source_key,
+                categories=[Category(value) for value in feedback.categories],
+                importance_score=feedback.importance_score,
+                discovery_score=feedback.discovery_score,
+            )
+            await session.commit()
+            return result
+
+    async def latest_telegram_update_id(self) -> int | None:
+        async with self.database.session() as session:
+            value = await session.scalar(select(func.max(TelegramUpdateModel.update_id)))
+            return int(value) if value is not None else None
+
+    async def mark_telegram_update_processed(self, update_id: int) -> None:
+        async with self.database.session() as session:
+            if await session.get(TelegramUpdateModel, update_id) is None:
+                session.add(TelegramUpdateModel(update_id=update_id))
+                await session.commit()
+
+    async def report_materials(self, *, days: int) -> list[MaterialModel]:
+        since = datetime.now(UTC) - timedelta(days=days)
+        async with self.database.session() as session:
+            rows = (
+                await session.scalars(
+                    select(MaterialModel)
+                    .where(MaterialModel.collected_at >= since)
+                    .options(selectinload(MaterialModel.source))
+                )
+            ).all()
+            return list(rows)
+
+    async def report_feedback(self, *, days: int) -> list[FeedbackModel]:
+        since = datetime.now(UTC) - timedelta(days=days)
+        async with self.database.session() as session:
+            rows = (
+                await session.scalars(
+                    select(FeedbackModel).where(FeedbackModel.updated_at >= since)
+                )
+            ).all()
+            return list(rows)
+
+    async def report_deliveries(self, *, days: int) -> list[DeliveryModel]:
+        since = datetime.now(UTC) - timedelta(days=days)
+        async with self.database.session() as session:
+            rows = (
+                await session.scalars(select(DeliveryModel).where(DeliveryModel.sent_at >= since))
+            ).all()
+            return list(rows)
 
     async def counts(self) -> dict[str, int]:
         async with self.database.session() as session:

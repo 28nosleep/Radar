@@ -9,7 +9,7 @@ from uuid import UUID
 
 import aiohttp
 
-from f117.domain import Category, EditorialCard
+from f117.domain import Category, EditorialCard, FeedbackType
 
 TELEGRAM_TEXT_LIMIT = 4096
 
@@ -22,6 +22,28 @@ class TelegramError(RuntimeError):
 class DeliveryReceipt:
     material_id: UUID
     message_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramFeedbackCallback:
+    update_id: int
+    callback_id: str
+    material_id: UUID
+    feedback_type: FeedbackType
+
+
+class FeedbackStore(Protocol):
+    async def latest_telegram_update_id(self) -> int | None: ...
+
+    async def mark_telegram_update_processed(self, update_id: int) -> None: ...
+
+    async def record_feedback(
+        self,
+        *,
+        material_id: UUID,
+        feedback_type: FeedbackType,
+        telegram_update_id: int | None = None,
+    ) -> object: ...
 
 
 DeliveryCallback = Callable[[DeliveryReceipt], Awaitable[None]]
@@ -64,6 +86,7 @@ class TelegramNotifier:
         if not chat_id.isdigit() or int(chat_id) <= 0:
             raise ValueError("F117_TELEGRAM_CHAT_ID must be a positive numeric private-chat ID")
         self.url = f"{api_base.rstrip('/')}/bot{bot_token}/sendMessage"
+        self.api_root = f"{api_base.rstrip('/')}/bot{bot_token}"
         self.chat_id = chat_id
         self.timeout = aiohttp.ClientTimeout(total=timeout_seconds)
         self.debug = debug
@@ -88,6 +111,7 @@ class TelegramNotifier:
                         render_card(card, section=section, debug=self.debug),
                         disable_preview=True,
                         link_url=card.material.url,
+                        material_id=card.material.material_id,
                     )
                     receipt = DeliveryReceipt(
                         material_id=card.material.material_id,
@@ -105,6 +129,7 @@ class TelegramNotifier:
         *,
         disable_preview: bool,
         link_url: str | None = None,
+        material_id: UUID | None = None,
     ) -> str:
         payload: dict[str, object] = {
             "chat_id": self.chat_id,
@@ -112,9 +137,25 @@ class TelegramNotifier:
             "parse_mode": "HTML",
             "disable_web_page_preview": disable_preview,
         }
-        if link_url is not None:
+        if link_url is not None and material_id is not None:
             payload["reply_markup"] = {
-                "inline_keyboard": [[{"text": "Открыть материал", "url": link_url}]]
+                "inline_keyboard": [
+                    [{"text": "Открыть материал", "url": link_url}],
+                    [
+                        {
+                            "text": "👍 Полезно",
+                            "callback_data": f"feedback:{material_id}:useful",
+                        },
+                        {
+                            "text": "👎 Мимо",
+                            "callback_data": f"feedback:{material_id}:miss",
+                        },
+                        {
+                            "text": "⭐ В пост",
+                            "callback_data": f"feedback:{material_id}:post",
+                        },
+                    ],
+                ]
             }
         async with session.post(
             self.url,
@@ -130,6 +171,71 @@ class TelegramNotifier:
             if not isinstance(result, dict) or "message_id" not in result:
                 raise TelegramError("Telegram sendMessage returned no message_id")
             return str(result["message_id"])
+
+
+class TelegramFeedbackPoller:
+    """One bounded long-poll pass for owner-only inline feedback callbacks."""
+
+    def __init__(
+        self,
+        *,
+        bot_token: str,
+        chat_id: str,
+        store: FeedbackStore,
+        api_base: str = "https://api.telegram.org",
+        timeout_seconds: float = 20.0,
+    ) -> None:
+        if not chat_id.isdigit() or int(chat_id) <= 0:
+            raise ValueError("F117_TELEGRAM_CHAT_ID must be a positive numeric private-chat ID")
+        self.api_root = f"{api_base.rstrip('/')}/bot{bot_token}"
+        self.chat_id = chat_id
+        self.store = store
+        self.timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+
+    async def poll_once(self) -> int:
+        async with aiohttp.ClientSession(timeout=self.timeout) as session:
+            request: dict[str, object] = {"allowed_updates": ["callback_query"]}
+            if latest_update_id := await self.store.latest_telegram_update_id():
+                request["offset"] = latest_update_id + 1
+            payload = await self._request(
+                session, "getUpdates", request
+            )
+            updates = payload.get("result", [])
+            if not isinstance(updates, list):
+                raise TelegramError("Telegram getUpdates returned invalid result")
+            processed = 0
+            for update in updates:
+                callback = _parse_feedback_callback(update, expected_chat_id=self.chat_id)
+                if callback is None:
+                    update_id = update.get("update_id") if isinstance(update, dict) else None
+                    if isinstance(update_id, int):
+                        await self.store.mark_telegram_update_processed(update_id)
+                    continue
+                saved = await self.store.record_feedback(
+                    material_id=callback.material_id,
+                    feedback_type=callback.feedback_type,
+                    telegram_update_id=callback.update_id,
+                )
+                text = "Оценка сохранена" if saved is not None else "Оценка уже обработана"
+                await self._request(
+                    session,
+                    "answerCallbackQuery",
+                    {"callback_query_id": callback.callback_id, "text": text},
+                )
+                processed += int(saved is not None)
+            return processed
+
+    async def _request(
+        self, session: aiohttp.ClientSession, method: str, payload: dict[str, object]
+    ) -> dict[str, object]:
+        async with session.post(f"{self.api_root}/{method}", json=payload) as response:
+            response_payload = await response.json(content_type=None)
+            if not isinstance(response_payload, dict):
+                raise TelegramError(f"Telegram {method} returned a non-object response")
+            if response.status != 200 or not response_payload.get("ok"):
+                description = response_payload.get("description", f"HTTP {response.status}")
+                raise TelegramError(f"Telegram {method} failed: {description}")
+            return response_payload
 
 
 def group_cards(cards: Sequence[EditorialCard]) -> dict[str, list[EditorialCard]]:
@@ -255,3 +361,38 @@ def _growth_line(metrics: dict[str, float]) -> str | None:
     if percent is None or hours is None or percent <= 0 or hours <= 0:
         return None
     return f"Набирает: +{percent:.0f}% за {hours:.1f} ч"
+
+
+def _parse_feedback_callback(
+    update: object, *, expected_chat_id: str
+) -> TelegramFeedbackCallback | None:
+    if not isinstance(update, dict):
+        return None
+    update_id = update.get("update_id")
+    callback = update.get("callback_query")
+    if not isinstance(update_id, int) or not isinstance(callback, dict):
+        return None
+    callback_id = callback.get("id")
+    data = callback.get("data")
+    message = callback.get("message")
+    if (
+        not isinstance(callback_id, str)
+        or not isinstance(data, str)
+        or not isinstance(message, dict)
+    ):
+        return None
+    chat = message.get("chat")
+    if not isinstance(chat, dict) or str(chat.get("id")) != expected_chat_id:
+        return None
+    parts = data.split(":", 2)
+    if len(parts) != 3 or parts[0] != "feedback":
+        return None
+    try:
+        return TelegramFeedbackCallback(
+            update_id=update_id,
+            callback_id=callback_id,
+            material_id=UUID(parts[1]),
+            feedback_type=FeedbackType(parts[2]),
+        )
+    except ValueError:
+        return None

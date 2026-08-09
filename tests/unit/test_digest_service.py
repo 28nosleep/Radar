@@ -33,6 +33,7 @@ class _MemoryRepository:
         self.recorded_deliveries: list[tuple[UUID, str | None]] = []
         self.saved_enrichments = 0
         self.source_results: list[dict[str, object]] = []
+        self.selected_ids: list[UUID] = []
 
     async def create_digest_run(self, *, dry_run: bool) -> UUID:
         run_id = uuid4()
@@ -130,6 +131,9 @@ class _MemoryRepository:
             else material
             for material in self.materials
         ]
+
+    async def record_selection(self, material_ids: list[UUID]) -> None:
+        self.selected_ids.extend(material_ids)
 
     async def save_enrichment(
         self,
@@ -485,6 +489,55 @@ async def test_etag_checkpoint_is_not_advanced_when_ingest_fails(tmp_path: Path)
         await service.run_once()
 
     assert repository.source_results == []
+
+
+@pytest.mark.asyncio
+async def test_reddit_failure_does_not_block_other_sources(tmp_path: Path) -> None:
+    catalog = tmp_path / "sources.json"
+    catalog.write_text(
+        json.dumps(
+            [
+                {"key": "rss", "name": "RSS", "feed_url": "https://rss.example/feed"},
+                {
+                    "key": "reddit-ai",
+                    "name": "Reddit AI",
+                    "kind": "reddit",
+                    "feed_url": "https://www.reddit.com",
+                    "reddit_subreddit": "artificial",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class RedditFailingCollector(_Collector):
+        async def fetch(
+            self,
+            source: FeedSource,
+            *,
+            etag: str | None = None,
+            last_modified: str | None = None,
+        ) -> FeedFetchResult:
+            if source.kind == "reddit":
+                raise RuntimeError("Reddit OAuth returned HTTP 401")
+            return await super().fetch(source, etag=etag, last_modified=last_modified)
+
+    repository = _MemoryRepository()
+    service = DigestService(
+        settings=Settings(_env_file=None, rss_catalog_path=catalog, digest_top_n=1, dry_run=True),
+        repository=repository,  # type: ignore[arg-type]
+        collector=RedditFailingCollector(
+            {"rss": [_item("rss", "1", "AI update", "https://example.com/ai", reputation=0.8)]}
+        ),  # type: ignore[arg-type]
+        enricher=_CountingEnricher(),
+        notifier=_Notifier(),
+    )
+
+    summary = await service.run_once()
+
+    assert summary.status == "completed_with_errors"
+    assert summary.inserted_count == 1
+    assert summary.source_failures[0].source_key == "reddit-ai"
 
 
 def test_cached_gpt_cards_are_fifo_delivery_queue_before_new_top_ranked_items() -> None:

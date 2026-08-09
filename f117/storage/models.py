@@ -91,6 +91,7 @@ class MaterialModel(Base):
     llm_model: Mapped[str | None] = mapped_column(String(120))
     llm_usage: Mapped[dict[str, int] | None] = mapped_column(JSON)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    selected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -148,3 +149,33 @@ class MetricSnapshotModel(Base):
     )
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     metrics: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class FeedbackModel(Base):
+    __tablename__ = "material_feedback"
+    __table_args__ = (UniqueConstraint("material_id", name="uq_feedback_material"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    material_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("materials.id", ondelete="CASCADE"), nullable=False
+    )
+    feedback_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    categories: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    importance_score: Mapped[float] = mapped_column(Float, nullable=False)
+    discovery_score: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class TelegramUpdateModel(Base):
+    __tablename__ = "telegram_updates"
+
+    update_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
