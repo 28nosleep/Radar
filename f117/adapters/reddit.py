@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 
 import aiohttp
 
-from f117.adapters.rss import FeedFetchResult
+from f117.adapters.rss import FeedFetchResult, RSSCollector, RSSFetchError
 from f117.domain import CollectedItem, FeedSource
 
 
 class RedditFetchError(RuntimeError):
+    pass
+
+
+class RedditOAuthUnauthorized(RedditFetchError):
     pass
 
 
@@ -31,6 +36,10 @@ class RedditCollector:
         self.access_token = ""
         self.token_lock = asyncio.Lock()
         self.logger = logging.getLogger(__name__)
+        self.rss = RSSCollector(
+            timeout_seconds=timeout_seconds,
+            user_agent=user_agent,
+        )
 
     async def fetch(
         self,
@@ -44,10 +53,7 @@ class RedditCollector:
         if not source.reddit_subreddit:
             raise RedditFetchError(f"{source.key} must declare reddit_subreddit")
         if not self.client_id or not self.client_secret:
-            self.logger.info(
-                "Reddit source %s skipped: OAuth credentials are not configured", source.key
-            )
-            return FeedFetchResult(items=[], etag=None, last_modified=None)
+            return await self._fetch_rss_fallback(source, session=session)
         owns_session = session is None
         if session is None:
             session = aiohttp.ClientSession(timeout=self.timeout, headers=self.headers)
@@ -61,6 +67,9 @@ class RedditCollector:
                 params={"limit": str(source.item_limit), "raw_json": "1"},
                 headers={**self.headers, "Authorization": f"Bearer {token}"},
             ) as response:
+                if response.status == 401:
+                    self.access_token = ""
+                    raise RedditOAuthUnauthorized("Reddit API returned HTTP 401")
                 if response.status != 200:
                     raise RedditFetchError(f"Reddit returned HTTP {response.status}")
                 payload = await response.json(content_type=None)
@@ -79,6 +88,8 @@ class RedditCollector:
                 etag=None,
                 last_modified=None,
             )
+        except RedditOAuthUnauthorized:
+            return await self._fetch_rss_fallback(source, session=session)
         except (aiohttp.ClientError, TimeoutError) as exc:
             raise RedditFetchError(f"Failed to fetch {source.key}: {exc}") from exc
         finally:
@@ -95,6 +106,8 @@ class RedditCollector:
                 auth=aiohttp.BasicAuth(self.client_id, self.client_secret),
                 headers=self.headers,
             ) as response:
+                if response.status == 401:
+                    raise RedditOAuthUnauthorized("Reddit OAuth returned HTTP 401")
                 if response.status != 200:
                     raise RedditFetchError(f"Reddit OAuth returned HTTP {response.status}")
                 payload = await response.json(content_type=None)
@@ -103,6 +116,42 @@ class RedditCollector:
                 raise RedditFetchError("Reddit OAuth returned no access token")
             self.access_token = token
             return token
+
+    async def _fetch_rss_fallback(
+        self, source: FeedSource, *, session: aiohttp.ClientSession | None
+    ) -> FeedFetchResult:
+        """Read-only public Atom fallback, used only while OAuth is unavailable."""
+
+        assert source.reddit_subreddit is not None
+        rss_source = source.model_copy(
+            update={"feed_url": f"https://www.reddit.com/r/{source.reddit_subreddit}/new.rss"}
+        )
+        try:
+            result = await self.rss.fetch(rss_source, session=session)
+        except RSSFetchError as exc:
+            self.logger.warning("Reddit RSS fallback skipped for %s: %s", source.key, exc)
+            return FeedFetchResult(items=[], etag=None, last_modified=None)
+        items: list[CollectedItem] = []
+        for item in result.items:
+            post_id = _reddit_post_id(item.url)
+            if post_id is None:
+                continue
+            items.append(
+                item.model_copy(
+                    update={
+                        "external_id": post_id,
+                        "subreddit": source.reddit_subreddit,
+                        "media_source": item.media_source and f"reddit:{item.media_source}",
+                    }
+                )
+            )
+        return FeedFetchResult(
+            items=items,
+            etag=result.etag,
+            last_modified=result.last_modified,
+            not_modified=result.not_modified,
+            partial=result.partial,
+        )
 
     @staticmethod
     def _post_to_item(
@@ -134,5 +183,42 @@ class RedditCollector:
                 "reddit_upvotes": float(post.get("score") or 0),
                 "reddit_comments": float(post.get("num_comments") or 0),
             },
+            subreddit=str(post.get("subreddit") or source.reddit_subreddit or "") or None,
+            media_type=_reddit_media_type(post),
+            media_url=_reddit_media_url(post),
+            thumbnail_url=_reddit_thumbnail(post),
+            media_source="reddit:api" if _reddit_media_url(post) else None,
             raw={"subreddit": post.get("subreddit"), "permalink": permalink},
         )
+
+
+_POST_ID_RE = re.compile(r"/comments/([a-z0-9]+)(?:/|$)", re.IGNORECASE)
+
+
+def _reddit_post_id(url: str) -> str | None:
+    match = _POST_ID_RE.search(url)
+    return match.group(1).lower() if match else None
+
+
+def _reddit_thumbnail(post: dict[str, Any]) -> str | None:
+    value = post.get("thumbnail")
+    return value if isinstance(value, str) and value.startswith(("https://", "http://")) else None
+
+
+def _reddit_media_url(post: dict[str, Any]) -> str | None:
+    preview = post.get("preview")
+    if isinstance(preview, dict):
+        images = preview.get("images")
+        if isinstance(images, list) and images and isinstance(images[0], dict):
+            source = images[0].get("source")
+            if isinstance(source, dict):
+                url = source.get("url")
+                if isinstance(url, str) and url.startswith(("https://", "http://")):
+                    return url.replace("&amp;", "&")
+    return _reddit_thumbnail(post)
+
+
+def _reddit_media_type(post: dict[str, Any]) -> str:
+    if post.get("is_video"):
+        return "video"
+    return "image" if _reddit_media_url(post) else "none"

@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
+import aiohttp
 import pytest
 
 from f117.adapters.telegram import (
@@ -86,6 +87,9 @@ def test_editorial_card_is_human_readable_and_hides_debug_metrics() -> None:
     assert "Открыть материал" in rendered
     assert "score" not in rendered.casefold()
     assert "freshness" not in rendered
+    assert rendered.startswith("📄 Исследования\n\n")
+    assert "Комментарий id:28:" in rendered
+    assert rendered.count("<code>") == 1
 
 
 def test_debug_card_exposes_internal_score_only_on_request() -> None:
@@ -166,6 +170,164 @@ async def test_telegram_adapter_sends_intro_and_one_message_per_card(
     assert (
         str(cards[0].material.material_id) in reply_markup["inline_keyboard"][1][0]["callback_data"]
     )
+
+
+@pytest.mark.asyncio
+async def test_image_card_uses_send_photo_and_invalid_image_falls_back_to_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[str] = []
+
+    class Response:
+        def __init__(self, status: int) -> None:
+            self.status = status
+
+        async def __aenter__(self) -> Response:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def json(self, *, content_type: object = None) -> dict[str, object]:
+            del content_type
+            return (
+                {"ok": True, "result": {"message_id": len(requests)}}
+                if self.status == 200
+                else {"ok": False, "description": "wrong file identifier"}
+            )
+
+    class Session:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        async def __aenter__(self) -> Session:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        def post(self, url: str, *, json: dict[str, object]) -> Response:
+            del json
+            requests.append(url.rsplit("/", 1)[-1])
+            return Response(400 if requests[-1] == "sendPhoto" else 200)
+
+    monkeypatch.setattr(
+        "f117.adapters.telegram.aiohttp.ClientSession", lambda **kwargs: Session(**kwargs)
+    )
+    card = _card(Category.AI).model_copy(
+        update={
+            "material": _card(Category.AI).material.model_copy(
+                update={"media_type": "image", "media_url": "https://cdn.example.com/image.jpg"}
+            )
+        }
+    )
+    await TelegramNotifier(bot_token="TOKEN", chat_id="123").send([card])
+
+    assert requests == ["sendMessage", "sendPhoto", "sendMessage"]
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_photo_send_does_not_issue_text_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[str] = []
+
+    class Response:
+        status = 200
+
+        async def __aenter__(self) -> Response:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def json(self, *, content_type: object = None) -> dict[str, object]:
+            del content_type
+            return {"ok": True, "result": {"message_id": 1}}
+
+    class Session:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        async def __aenter__(self) -> Session:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        def post(self, url: str, *, json: dict[str, object]) -> Response:
+            del json
+            method = url.rsplit("/", 1)[-1]
+            requests.append(method)
+            if method == "sendPhoto":
+                raise aiohttp.ClientError("connection lost")
+            return Response()
+
+    monkeypatch.setattr(
+        "f117.adapters.telegram.aiohttp.ClientSession", lambda **kwargs: Session(**kwargs)
+    )
+    card = _card(Category.AI).model_copy(
+        update={
+            "material": _card(Category.AI).material.model_copy(
+                update={"media_type": "image", "media_url": "https://cdn.example.com/image.jpg"}
+            )
+        }
+    )
+    with pytest.raises(TelegramError, match="ambiguous"):
+        await TelegramNotifier(bot_token="TOKEN", chat_id="123").send([card])
+
+    assert requests == ["sendMessage", "sendPhoto"]
+
+
+@pytest.mark.asyncio
+async def test_youtube_card_requests_large_preview(monkeypatch: pytest.MonkeyPatch) -> None:
+    payloads: list[dict[str, object]] = []
+
+    class Response:
+        status = 200
+
+        async def __aenter__(self) -> Response:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def json(self, *, content_type: object = None) -> dict[str, object]:
+            del content_type
+            return {"ok": True, "result": {"message_id": len(payloads)}}
+
+    class Session:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        async def __aenter__(self) -> Session:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        def post(self, _: str, *, json: dict[str, object]) -> Response:
+            payloads.append(json)
+            return Response()
+
+    monkeypatch.setattr(
+        "f117.adapters.telegram.aiohttp.ClientSession", lambda **kwargs: Session(**kwargs)
+    )
+    card = _card(Category.AI).model_copy(
+        update={
+            "material": _card(Category.AI).material.model_copy(
+                update={"url": "https://www.youtube.com/watch?v=video", "media_type": "video"}
+            )
+        }
+    )
+    await TelegramNotifier(bot_token="TOKEN", chat_id="123").send([card])
+
+    assert payloads[1]["link_preview_options"] == {
+        "is_disabled": False,
+        "url": "https://www.youtube.com/watch?v=video",
+        "prefer_large_media": True,
+        "show_above_text": True,
+    }
 
 
 @pytest.mark.asyncio

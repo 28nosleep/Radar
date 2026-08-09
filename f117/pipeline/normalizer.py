@@ -248,6 +248,11 @@ def normalize_item(item: CollectedItem) -> NormalizedItem:
         source_categories=list(item.source_categories),
         categories=[],
         popularity=dict(item.popularity),
+        subreddit=clean_html(item.subreddit) or None,
+        media_type=item.media_type,
+        media_url=item.media_url.strip() if item.media_url else None,
+        thumbnail_url=item.thumbnail_url.strip() if item.thumbnail_url else None,
+        media_source=clean_html(item.media_source) or None,
         content_hash=sha256(hash_input).hexdigest(),
         normalized_title=normalized_title,
     )

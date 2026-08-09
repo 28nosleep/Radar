@@ -202,6 +202,11 @@ class Repository:
                     collected_at=item.collected_at,
                     description=item.description,
                     author=item.author,
+                    subreddit=item.subreddit,
+                    media_type=item.media_type,
+                    media_url=item.media_url,
+                    thumbnail_url=item.thumbnail_url,
+                    media_source=item.media_source,
                     categories=[category.value for category in item.categories],
                     popularity=item.popularity,
                     raw_metrics=item.popularity,
@@ -279,6 +284,11 @@ class Repository:
                 "collected_at": item.collected_at,
                 "description": item.description,
                 "author": item.author,
+                "subreddit": item.subreddit,
+                "media_type": item.media_type,
+                "media_url": item.media_url,
+                "thumbnail_url": item.thumbnail_url,
+                "media_source": item.media_source,
                 "content_hash": item.content_hash,
                 "normalized_title": item.normalized_title,
             }
@@ -315,6 +325,28 @@ class Repository:
             MetricSnapshotModel(material_id=row.id, captured_at=captured_at, metrics=dict(metrics))
         )
         await self._aggregate_root_metrics(session, row.duplicate_of_id or row.id, captured_at)
+
+    async def update_media(
+        self,
+        material_id: UUID,
+        *,
+        media_type: str,
+        media_url: str | None,
+        thumbnail_url: str | None,
+        media_source: str | None,
+    ) -> None:
+        async with self.database.session() as session:
+            await session.execute(
+                update(MaterialModel)
+                .where(MaterialModel.id == material_id)
+                .values(
+                    media_type=media_type,
+                    media_url=media_url,
+                    thumbnail_url=thumbnail_url,
+                    media_source=media_source,
+                )
+            )
+            await session.commit()
 
     async def _aggregate_root_metrics(
         self, session: Any, root_id: UUID, captured_at: datetime
@@ -795,6 +827,11 @@ class Repository:
             collected_at=row.collected_at,
             description=row.description,
             author=row.author,
+            subreddit=row.subreddit,
+            media_type=row.media_type,
+            media_url=row.media_url,
+            thumbnail_url=row.thumbnail_url,
+            media_source=row.media_source,
             source_categories=[Category(value) for value in row.source.default_categories],
             categories=[Category(value) for value in row.categories],
             popularity=row.popularity,

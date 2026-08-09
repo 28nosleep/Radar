@@ -15,6 +15,7 @@ import aiohttp
 from f117.domain import Category, EditorialCard, FeedbackType
 
 TELEGRAM_TEXT_LIMIT = 4096
+TELEGRAM_CAPTION_BUDGET = 900
 TELEGRAM_URL_LIMIT = 2048
 TELEGRAM_DIGEST_URL_LIMIT = 512
 
@@ -105,7 +106,6 @@ class TelegramNotifier:
     ) -> None:
         if not chat_id.isdigit() or int(chat_id) <= 0:
             raise ValueError("F117_TELEGRAM_CHAT_ID must be a positive numeric private-chat ID")
-        self.url = f"{api_base.rstrip('/')}/bot{bot_token}/sendMessage"
         self.api_root = f"{api_base.rstrip('/')}/bot{bot_token}"
         self.chat_id = chat_id
         self.timeout = aiohttp.ClientTimeout(total=timeout_seconds)
@@ -132,19 +132,13 @@ class TelegramNotifier:
         receipts: list[DeliveryReceipt] = []
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
             await self._send_message(
-                session, f"<b>Radar</b> · {len(cards)} материалов", disable_preview=True
+                session, f"<b>id:28</b> · {len(cards)} материалов", disable_preview=True
             )
             for card, rendered in rendered_cards:
                 if on_delivering is not None:
                     await on_delivering(card.material.material_id)
                 try:
-                    message_id = await self._send_message(
-                        session,
-                        rendered,
-                        disable_preview=True,
-                        link_url=card.material.url,
-                        material_id=card.material.material_id,
-                    )
+                    message_id = await self._send_card(session, card, rendered)
                 except TelegramError as exc:
                     exc.material_id = card.material.material_id
                     raise
@@ -157,6 +151,70 @@ class TelegramNotifier:
                     await on_delivered(receipt)
         return receipts
 
+    async def _send_card(
+        self, session: aiohttp.ClientSession, card: EditorialCard, rendered: str
+    ) -> str:
+        material = card.material
+        if _is_youtube_url(material.url):
+            try:
+                return await self._send_message(
+                    session,
+                    rendered,
+                    disable_preview=False,
+                    link_url=material.url,
+                    material_id=material.material_id,
+                    preview_url=material.url,
+                )
+            except TelegramError as exc:
+                if (
+                    exc.ambiguous
+                    or exc.retry_after_seconds is not None
+                    or not material.thumbnail_url
+                    or not _is_preview_validation_error(exc)
+                ):
+                    raise
+                thumbnail = material.thumbnail_url
+                assert thumbnail is not None
+                return await self._send_photo(session, card, rendered, thumbnail)
+        image_url = material.media_url or material.thumbnail_url
+        if material.media_type == "image" and _is_safe_media_url(image_url):
+            assert image_url is not None
+            try:
+                return await self._send_photo(session, card, rendered, image_url)
+            except TelegramError as exc:
+                # A confirmed media validation error is safe to degrade. An uncertain
+                # request may already have posted and must preserve the normal hold.
+                if (
+                    exc.ambiguous
+                    or exc.retry_after_seconds is not None
+                    or not _is_media_validation_error(exc)
+                ):
+                    raise
+        return await self._send_message(
+            session,
+            rendered,
+            disable_preview=True,
+            link_url=material.url,
+            material_id=material.material_id,
+        )
+
+    async def _send_photo(
+        self, session: aiohttp.ClientSession, card: EditorialCard, caption: str, photo: str
+    ) -> str:
+        if len(caption) > TELEGRAM_CAPTION_BUDGET:
+            raise ValueError("Rendered Telegram media caption exceeds the safe budget")
+        return await self._send_request(
+            session,
+            "sendPhoto",
+            {
+                "chat_id": self.chat_id,
+                "photo": photo,
+                "caption": caption,
+                "parse_mode": "HTML",
+                "reply_markup": _reply_markup(card.material.material_id, card.material.url),
+            },
+        )
+
     async def _send_message(
         self,
         session: aiohttp.ClientSession,
@@ -165,6 +223,7 @@ class TelegramNotifier:
         disable_preview: bool,
         link_url: str | None = None,
         material_id: UUID | None = None,
+        preview_url: str | None = None,
     ) -> str:
         payload: dict[str, object] = {
             "chat_id": self.chat_id,
@@ -173,51 +232,45 @@ class TelegramNotifier:
             "disable_web_page_preview": disable_preview,
         }
         if link_url is not None and material_id is not None:
-            payload["reply_markup"] = {
-                "inline_keyboard": [
-                    [{"text": "Открыть материал", "url": link_url}],
-                    [
-                        {
-                            "text": "👍 Полезно",
-                            "callback_data": f"feedback:{material_id}:useful",
-                        },
-                        {
-                            "text": "👎 Мимо",
-                            "callback_data": f"feedback:{material_id}:miss",
-                        },
-                        {
-                            "text": "⭐ В пост",
-                            "callback_data": f"feedback:{material_id}:post",
-                        },
-                    ],
-                ]
+            payload["reply_markup"] = _reply_markup(material_id, link_url)
+        if preview_url is not None:
+            payload["link_preview_options"] = {
+                "is_disabled": False,
+                "url": preview_url,
+                "prefer_large_media": True,
+                "show_above_text": True,
             }
+        return await self._send_request(session, "sendMessage", payload)
+
+    async def _send_request(
+        self, session: aiohttp.ClientSession, method: str, payload: dict[str, object]
+    ) -> str:
         for attempt in range(3):
             await self._pace()
             try:
-                async with session.post(self.url, json=payload) as response:
+                async with session.post(f"{self.api_root}/{method}", json=payload) as response:
                     response_payload = await response.json(content_type=None)
             except (aiohttp.ClientError, TimeoutError) as exc:
                 raise TelegramError(
-                    f"Telegram sendMessage response is ambiguous: {exc}", ambiguous=True
+                    f"Telegram {method} response is ambiguous: {exc}", ambiguous=True
                 ) from exc
             if not isinstance(response_payload, dict):
-                raise TelegramError("Telegram sendMessage returned a non-object response")
+                raise TelegramError(f"Telegram {method} returned a non-object response")
             if response.status == 429 or response_payload.get("error_code") == 429:
                 retry_after = _retry_after(response_payload) or 1
                 if attempt < 2:
                     await asyncio.sleep(retry_after)
                     continue
                 raise TelegramError(
-                    "Telegram sendMessage rate limit exhausted",
+                    f"Telegram {method} rate limit exhausted",
                     retry_after_seconds=retry_after,
                 )
             if response.status != 200 or not response_payload.get("ok"):
                 description = response_payload.get("description", f"HTTP {response.status}")
-                raise TelegramError(f"Telegram sendMessage failed: {description}")
+                raise TelegramError(f"Telegram {method} failed: {description}")
             result = response_payload.get("result")
             if not isinstance(result, dict) or "message_id" not in result:
-                raise TelegramError("Telegram sendMessage returned no message_id", ambiguous=True)
+                raise TelegramError(f"Telegram {method} returned no message_id", ambiguous=True)
             return str(result["message_id"])
         raise AssertionError("unreachable")
 
@@ -313,10 +366,12 @@ def render_card(card: EditorialCard, *, section: str | None = None, debug: bool 
     categories = ", ".join(_category_label(category) for category in material.categories)
     link = html.escape(_telegram_url(material.url), quote=True)
     rendered = (
-        f"<b>{_escape_bounded(section or _section_for(card), 80)}</b>\n"
-        f"<b>{_escape_bounded(enrichment.title_ru, 350)}</b>\n\n"
-        f"{_escape_bounded(enrichment.summary_ru, 1200)}\n\n"
-        f"<b>Почему это важно:</b> {_escape_bounded(enrichment.why_important, 600)}\n\n"
+        f"{_escape_bounded(section or _section_for(card), 80)}\n\n"
+        f"<b>{_escape_bounded(enrichment.title_ru, 220)}</b>\n\n"
+        f"{_escape_bounded(enrichment.summary_ru, 380)}\n\n"
+        f"<b>Почему это важно:</b> {_escape_bounded(enrichment.why_important, 220)}\n\n"
+        f"<i>Комментарий {_escape_bounded(_id28_comment(enrichment.ironic_comment), 190)}</i>\n\n"
+        f"<code>&gt;_ {_console_accent(card)}</code>\n\n"
         f"Источник: {_escape_bounded(material.source_name, 160)}\n"
         f"Теги: {_escape_bounded(categories or _category_label(Category.OTHER), 160)}\n"
         f'<a href="{link}">Открыть материал</a>'
@@ -336,13 +391,19 @@ def render_card(card: EditorialCard, *, section: str | None = None, debug: bool 
             f"discovery {material.discovery_score:.1f}/100 · "
             f"post {enrichment.post_fit_score}/10\n{_escape_bounded(reasons, 500)}</i>"
         )
-    if len(rendered) > TELEGRAM_TEXT_LIMIT:
+    limit = (
+        TELEGRAM_CAPTION_BUDGET
+        if material.media_type == "image"
+        and _is_safe_media_url(material.media_url or material.thumbnail_url)
+        else TELEGRAM_TEXT_LIMIT
+    )
+    if len(rendered) > limit:
         raise ValueError("Rendered Telegram card exceeds the safe text budget")
     return rendered
 
 
 def render_digest(cards: Sequence[EditorialCard]) -> str:
-    chunks = [f"Radar — Intelligence Engine · {len(cards)} материалов"]
+    chunks = [f"id:28 — Intelligence Engine · {len(cards)} материалов"]
     for section, section_cards in group_cards(cards).items():
         chunks.append(f"\n{section}")
         for card in section_cards:
@@ -414,6 +475,54 @@ def _growth_line(metrics: dict[str, float]) -> str | None:
     if percent is None or hours is None or percent <= 0 or hours <= 0:
         return None
     return f"Набирает: +{percent:.0f}% за {hours:.1f} ч"
+
+
+def _console_accent(card: EditorialCard) -> str:
+    accents = ("сигнал принят", "аномалия обнаружена", "объект замечен", "новая сборка")
+    return accents[card.material.material_id.int % len(accents)]
+
+
+def _id28_comment(value: str) -> str:
+    comment = value.strip()
+    return comment if comment.startswith("id:28") else f"id:28: {comment}"
+
+
+def _reply_markup(material_id: UUID, link_url: str) -> dict[str, object]:
+    return {
+        "inline_keyboard": [
+            [{"text": "Открыть материал", "url": link_url}],
+            [
+                {"text": "👍 Полезно", "callback_data": f"feedback:{material_id}:useful"},
+                {"text": "👎 Мимо", "callback_data": f"feedback:{material_id}:miss"},
+                {"text": "⭐ В пост", "callback_data": f"feedback:{material_id}:post"},
+            ],
+        ]
+    }
+
+
+def _is_youtube_url(url: str) -> bool:
+    host = urlsplit(url).hostname or ""
+    return host.casefold() in {"youtube.com", "www.youtube.com", "youtu.be"}
+
+
+def _is_safe_media_url(url: str | None) -> bool:
+    if not url or len(url) > TELEGRAM_URL_LIMIT:
+        return False
+    parsed = urlsplit(url)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _is_media_validation_error(error: TelegramError) -> bool:
+    message = str(error).casefold()
+    return any(
+        token in message
+        for token in ("wrong file", "failed to get http url", "invalid photo", "photo url")
+    )
+
+
+def _is_preview_validation_error(error: TelegramError) -> bool:
+    message = str(error).casefold()
+    return "link preview" in message or "link_preview" in message
 
 
 def _telegram_url(value: str) -> str:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
@@ -72,6 +73,25 @@ def _source() -> FeedSource:
         reputation=0.9,
         default_categories=[Category.AI],
     )
+
+
+def test_rss_extracts_publisher_image_metadata() -> None:
+    item = RSSCollector._entry_to_item(
+        _source(),
+        {
+            "title": "Image post",
+            "link": "https://example.com/post",
+            "id": "post-1",
+            "summary": '<p><img src="https://cdn.example.com/fallback.jpg"></p>',
+            "media_content": [{"url": "https://cdn.example.com/hero.jpg", "medium": "image"}],
+        },
+        datetime(2026, 8, 9, tzinfo=UTC),
+    )
+
+    assert item is not None
+    assert item.media_type == "image"
+    assert item.media_url == "https://cdn.example.com/hero.jpg"
+    assert item.media_source == "rss:media"
 
 
 @pytest.mark.asyncio

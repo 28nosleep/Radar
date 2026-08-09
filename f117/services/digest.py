@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from f117.adapters.collectors import SourceCollector
+from f117.adapters.media import MetadataMediaFetcher
 from f117.adapters.openai_editorial import DeterministicEditorialEnricher, EditorialEnricher
 from f117.adapters.rss import FeedFetchResult
 from f117.adapters.telegram import (
@@ -96,6 +97,11 @@ class DigestService:
             min_baseline=settings.discovery_min_baseline,
             min_growth_absolute=settings.discovery_min_growth_absolute,
             hidden_gem_max_popularity=settings.discovery_hidden_gem_max_popularity,
+        )
+        self.media_fetcher = MetadataMediaFetcher(
+            timeout_seconds=settings.metadata_fetch_timeout_seconds,
+            max_response_bytes=settings.metadata_fetch_max_response_bytes,
+            user_agent=settings.http_user_agent,
         )
 
     async def run_once(self) -> RunSummary:
@@ -219,6 +225,9 @@ class DigestService:
                 lookback_hours=self.settings.candidate_lookback_hours,
                 delivery_claim_lease_seconds=self.settings.delivery_claim_lease_seconds,
             )
+            candidates = [
+                candidate for candidate in candidates if self._passes_base_freshness(candidate)
+            ]
             counts["candidate_count"] = len(candidates)
             ranked = [
                 score_material(candidate, config=self.ranking_config) for candidate in candidates
@@ -248,6 +257,12 @@ class DigestService:
                 )
                 for material in ranked
             ]
+            candidate_by_id = {candidate.id: candidate for candidate in candidates}
+            ranked = [
+                material
+                for material in ranked
+                if self._passes_discovery_freshness(candidate_by_id[material.material_id], material)
+            ]
             await self.repository.save_rankings(ranked)
             await self.repository.save_discovery_scores(
                 {material.material_id: material.discovery_score for material in ranked}
@@ -266,6 +281,7 @@ class DigestService:
                     discovery_selection_boost=self.settings.discovery_selection_boost,
                 ),
             )
+            selected = await self._enrich_final_media(selected)
             counts["selected_count"] = len(selected)
             await self.repository.record_selection([material.material_id for material in selected])
 
@@ -487,6 +503,57 @@ class DigestService:
             else:
                 valid.append(card)
         return valid, failures
+
+    def _passes_base_freshness(self, material: StoredMaterial) -> bool:
+        """Keep old content out of daily sections; GitHub freshness comes from signals/releases."""
+
+        if material.item.source_key.startswith("github-"):
+            return True
+        age_days = (datetime.now(UTC) - material.item.published_at).total_seconds() / 86_400
+        categories = set(material.item.categories)
+        if Category.FUNNY in categories or Category.WTF in categories:
+            return age_days <= self.settings.freshness_funny_wtf_max_age_days
+        if material.item.source_key.startswith("youtube-"):
+            return age_days <= self.settings.freshness_youtube_daily_max_age_days
+        return age_days <= self.settings.freshness_daily_max_age_days
+
+    def _passes_discovery_freshness(self, stored: StoredMaterial, ranked: RankedMaterial) -> bool:
+        if stored.item.source_key.startswith("github-") or not (ranked.rising or ranked.hidden_gem):
+            return True
+        age_days = (datetime.now(UTC) - stored.item.published_at).total_seconds() / 86_400
+        return age_days <= self.settings.freshness_discovery_max_age_days
+
+    async def _enrich_final_media(self, selected: Sequence[RankedMaterial]) -> list[RankedMaterial]:
+        """Fetch one page at most per final card, never during collection or dry-runs."""
+
+        if self.settings.dry_run:
+            return list(selected)
+        enriched: list[RankedMaterial] = []
+        for material in selected:
+            if material.media_type != "none" or material.thumbnail_url:
+                enriched.append(material)
+                continue
+            image = await self.media_fetcher.image_for(material.url)
+            if image is None:
+                enriched.append(material)
+                continue
+            updated = material.model_copy(
+                update={
+                    "media_type": "image",
+                    "media_url": image,
+                    "thumbnail_url": image,
+                    "media_source": "page:og",
+                }
+            )
+            await self.repository.update_media(
+                material.material_id,
+                media_type="image",
+                media_url=image,
+                thumbnail_url=image,
+                media_source="page:og",
+            )
+            enriched.append(updated)
+        return enriched
 
 
 def _select_for_delivery(

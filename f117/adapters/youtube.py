@@ -121,6 +121,14 @@ class YouTubeCollector:
             dict(statistics_value) if isinstance(statistics_value, dict) else {}
         )
         video_id = str(video.get("id"))
+        thumbnails = snippet.get("thumbnails")
+        thumbnail_url = None
+        if isinstance(thumbnails, dict):
+            for size in ("maxres", "standard", "high", "medium", "default"):
+                candidate = thumbnails.get(size)
+                if isinstance(candidate, dict) and isinstance(candidate.get("url"), str):
+                    thumbnail_url = candidate["url"]
+                    break
         return CollectedItem(
             external_id=video_id,
             source_key=source.key,
@@ -138,6 +146,10 @@ class YouTubeCollector:
                 "likes": float(statistics.get("likeCount") or 0),
                 "comments": float(statistics.get("commentCount") or 0),
             },
+            media_type="video",
+            media_url=f"https://www.youtube.com/watch?v={video_id}",
+            thumbnail_url=thumbnail_url,
+            media_source="youtube",
             raw={"channel_id": snippet.get("channelId")},
         )
 

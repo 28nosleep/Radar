@@ -64,6 +64,11 @@ class CollectedItem(BaseModel):
     author: str | None = None
     source_categories: list[Category] = Field(default_factory=list)
     popularity: dict[str, float] = Field(default_factory=dict)
+    subreddit: str | None = None
+    media_type: Literal["image", "video", "none"] = "none"
+    media_url: str | None = None
+    thumbnail_url: str | None = None
+    media_source: str | None = None
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -84,6 +89,11 @@ class NormalizedItem(BaseModel):
     source_categories: list[Category] = Field(default_factory=list)
     categories: list[Category] = Field(default_factory=list)
     popularity: dict[str, float] = Field(default_factory=dict)
+    subreddit: str | None = None
+    media_type: Literal["image", "video", "none"] = "none"
+    media_url: str | None = None
+    thumbnail_url: str | None = None
+    media_source: str | None = None
     content_hash: str
     normalized_title: str
 
@@ -94,6 +104,7 @@ class EditorialEnrichment(BaseModel):
     title_ru: str = Field(min_length=1, max_length=300)
     summary_ru: str = Field(min_length=1, max_length=1200)
     why_important: str = Field(min_length=1, max_length=700)
+    ironic_comment: str = Field(default="id:28: наблюдение записано.", min_length=1, max_length=220)
     post_fit_score: int = Field(ge=0, le=10)
 
 
@@ -135,6 +146,10 @@ class RankedMaterial(BaseModel):
     description: str
     categories: list[Category]
     popularity: dict[str, float]
+    media_type: Literal["image", "video", "none"] = "none"
+    media_url: str | None = None
+    thumbnail_url: str | None = None
+    media_source: str | None = None
     independent_mentions: int
     score: float
     score_reasons: list[str]

@@ -54,6 +54,12 @@ def test_funny_and_wtf_are_independent_labels() -> None:
     assert categories == [Category.ROBOTICS, Category.FUNNY, Category.WTF]
 
 
+def test_humanoid_robot_trends_video_is_not_wtf() -> None:
+    assert classify_text("CNET humanoid robot trends for 2025", "An overview of robotics") == [
+        Category.ROBOTICS
+    ]
+
+
 def test_source_categories_are_preserved_before_keyword_results() -> None:
     item = _item(
         title="A paper introduces a language model",

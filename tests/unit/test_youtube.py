@@ -26,6 +26,7 @@ def test_video_normalization_preserves_available_statistics() -> None:
                 "channelTitle": "Lab",
                 "channelId": "channel",
                 "publishedAt": "2026-08-09T10:00:00Z",
+                "thumbnails": {"high": {"url": "https://img.youtube.com/video-1/hq.jpg"}},
             },
             "statistics": {"viewCount": "5000", "likeCount": "200", "commentCount": "35"},
         },
@@ -36,6 +37,8 @@ def test_video_normalization_preserves_available_statistics() -> None:
     assert item.author == "Lab"
     assert item.popularity["youtube_views"] == 5000
     assert item.popularity["likes"] == 200
+    assert item.media_type == "video"
+    assert item.thumbnail_url == "https://img.youtube.com/video-1/hq.jpg"
 
 
 @pytest.mark.asyncio

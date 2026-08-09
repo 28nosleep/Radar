@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import calendar
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import struct_time
@@ -149,6 +150,7 @@ class RSSCollector:
             "feed_title": source.name,
             "tags": [str(tag.get("term", "")) for tag in entry.get("tags", []) if tag.get("term")],
         }
+        media_type, media_url, thumbnail_url, media_source = _entry_media(entry, description)
         return CollectedItem(
             external_id=external_id,
             source_key=source.key,
@@ -162,6 +164,10 @@ class RSSCollector:
             author=author,
             source_categories=source.default_categories,
             popularity={},
+            media_type=media_type,
+            media_url=media_url,
+            thumbnail_url=thumbnail_url,
+            media_source=media_source,
             raw=raw,
         )
 
@@ -171,3 +177,43 @@ def _entry_datetime(entry: Any) -> datetime | None:
     if value is None:
         return None
     return datetime.fromtimestamp(calendar.timegm(value), tz=UTC)
+
+
+_IMAGE_RE = re.compile(r"<img\b[^>]*\bsrc=[\"']([^\"']+)", re.IGNORECASE)
+
+
+def _entry_media(entry: Any, description: str) -> tuple[str, str | None, str | None, str | None]:
+    """Use publisher-supplied feed metadata only; no page fetches at collection time."""
+
+    def url_from(value: object) -> str | None:
+        if isinstance(value, dict):
+            value = value.get("url") or value.get("href")
+        if isinstance(value, str) and value.strip().startswith(("https://", "http://")):
+            return value.strip()
+        return None
+
+    media_content = entry.get("media_content") or []
+    for value in media_content if isinstance(media_content, list) else [media_content]:
+        if url := url_from(value):
+            medium = value.get("medium") if isinstance(value, dict) else None
+            return ("video" if medium == "video" else "image", url, None, "rss:media")
+    media_thumbnail = entry.get("media_thumbnail") or []
+    for value in media_thumbnail if isinstance(media_thumbnail, list) else [media_thumbnail]:
+        if url := url_from(value):
+            return "image", url, url, "rss:thumbnail"
+    enclosures = entry.get("enclosures") or []
+    for value in enclosures if isinstance(enclosures, list) else [enclosures]:
+        if url := url_from(value):
+            mime = value.get("type", "") if isinstance(value, dict) else ""
+            return (
+                "video" if str(mime).startswith("video/") else "image",
+                url,
+                None,
+                "rss:enclosure",
+            )
+    image = entry.get("image")
+    if url := url_from(image):
+        return "image", url, url, "rss:image"
+    if match := _IMAGE_RE.search(description):
+        return "image", match.group(1), match.group(1), "rss:content"
+    return "none", None, None, None

@@ -24,6 +24,10 @@ class Settings(BaseSettings):
 
     scheduler_interval_minutes: int = Field(default=180, ge=5)
     candidate_lookback_hours: int = Field(default=24, ge=1, le=168)
+    freshness_daily_max_age_days: int = Field(default=30, ge=1, le=365)
+    freshness_youtube_daily_max_age_days: int = Field(default=30, ge=1, le=365)
+    freshness_funny_wtf_max_age_days: int = Field(default=14, ge=1, le=365)
+    freshness_discovery_max_age_days: int = Field(default=14, ge=1, le=365)
     dedup_lookback_days: int = Field(default=7, ge=1, le=30)
     dedup_title_threshold: float = Field(default=0.92, ge=0.8, le=1.0)
     digest_top_n: int = Field(default=10, ge=1, le=20)
@@ -32,6 +36,8 @@ class Settings(BaseSettings):
     http_max_response_bytes: int = Field(default=5_000_000, ge=100_000)
     rss_max_concurrency: int = Field(default=8, ge=1, le=32)
     http_user_agent: str = "Radar-Intelligence-Engine/0.1 (+personal-feed-reader)"
+    metadata_fetch_max_response_bytes: int = Field(default=300_000, ge=10_000, le=2_000_000)
+    metadata_fetch_timeout_seconds: float = Field(default=8.0, ge=1.0, le=30.0)
     github_api_token: SecretStr | None = None
     reddit_client_id: SecretStr | None = None
     reddit_client_secret: SecretStr | None = None

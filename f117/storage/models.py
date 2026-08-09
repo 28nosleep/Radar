@@ -76,6 +76,11 @@ class MaterialModel(Base):
     collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     author: Mapped[str | None] = mapped_column(Text)
+    subreddit: Mapped[str | None] = mapped_column(String(160))
+    media_type: Mapped[str] = mapped_column(String(16), nullable=False, default="none")
+    media_url: Mapped[str | None] = mapped_column(Text)
+    thumbnail_url: Mapped[str | None] = mapped_column(Text)
+    media_source: Mapped[str | None] = mapped_column(String(120))
     categories: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     popularity: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False, default=dict)
     # Raw provider observations are kept separate from the canonical aggregate.
