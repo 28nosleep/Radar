@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 
 def _default_reddit_rss_listings() -> list[Literal["new", "hot", "rising"]]:
@@ -32,6 +32,19 @@ class FeedbackType(StrEnum):
     POST = "post"
 
 
+class SourceRole(StrEnum):
+    PRIMARY_NEWS = "primary_news"
+    DISCOVERY = "discovery"
+
+
+class AIVerdict(StrEnum):
+    STRONG = "STRONG"
+    INTERESTING = "INTERESTING"
+    WEAK = "WEAK"
+    HYPE = "HYPE"
+    SKIP = "SKIP"
+
+
 class FeedSource(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -42,6 +55,7 @@ class FeedSource(BaseModel):
     reputation: float = Field(default=0.5, ge=0.0, le=1.0)
     enabled: bool = True
     default_categories: list[Category] = Field(default_factory=list)
+    role: SourceRole = SourceRole.PRIMARY_NEWS
     kind: Literal["rss", "hacker_news", "arxiv", "github", "reddit", "youtube"] = "rss"
     collection: Literal["top", "new", "best"] = "top"
     item_limit: int = Field(default=30, ge=1, le=100)
@@ -57,6 +71,24 @@ class FeedSource(BaseModel):
     )
     youtube_channel_ids: list[str] = Field(default_factory=list)
     youtube_queries: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_discovery_role(cls, value: object) -> object:
+        if (
+            isinstance(value, dict)
+            and "role" not in value
+            and value.get("kind")
+            in {
+                "hacker_news",
+                "arxiv",
+                "github",
+                "reddit",
+                "youtube",
+            }
+        ):
+            return {**value, "role": SourceRole.DISCOVERY}
+        return value
 
 
 class CollectedItem(BaseModel):
@@ -115,14 +147,28 @@ class EditorialEnrichment(BaseModel):
 
     title_ru: str = Field(min_length=1, max_length=300)
     summary_ru: str = Field(min_length=1, max_length=1200)
-    why_important: str = Field(min_length=1, max_length=700)
-    audience_interest_reason: str = Field(
-        default="Материал соответствует редакционному профилю Radar.",
-        min_length=1,
-        max_length=500,
+    ai_opinion: str = Field(
+        default=(
+            "Данных пока недостаточно, чтобы считать это значимым. Материал стоит "
+            "воспринимать как предварительный сигнал: без независимых подтверждений, "
+            "измеримого внедрения или ясных последствий громкие выводы были бы натяжкой."
+            " Сам по себе отбор в кандидаты показывает тематическое соответствие, а не "
+            "доказанную практическую, техническую или культурную ценность."
+        ),
+        min_length=100,
+        max_length=600,
     )
-    ironic_comment: str = Field(default="id:28: наблюдение записано.", min_length=1, max_length=220)
+    ai_verdict: AIVerdict = AIVerdict.WEAK
     post_fit_score: int = Field(ge=0, le=10)
+
+    @field_validator("ai_opinion", mode="before")
+    @classmethod
+    def validate_ai_opinion(cls, value: object) -> str:
+        from f117.pipeline.editorial_output import normalize_ai_opinion
+
+        if not isinstance(value, str):
+            raise ValueError("AI opinion must be text")
+        return normalize_ai_opinion(value)
 
 
 class StoredMaterial(BaseModel):
@@ -163,6 +209,7 @@ class RankedMaterial(BaseModel):
     description: str
     categories: list[Category]
     popularity: dict[str, float]
+    qualitative_signals: list[str] = Field(default_factory=list)
     media_type: Literal["image", "video", "none"] = "none"
     media_url: str | None = None
     thumbnail_url: str | None = None
@@ -178,6 +225,9 @@ class RankedMaterial(BaseModel):
     editorial_reasons: list[str] = Field(default_factory=list)
     delivery_score: float = Field(default=0.0, ge=0.0, le=100.0)
     urgent: bool = False
+    manual_submission: bool = False
+    translated_title_ru: str | None = None
+    translated_summary_ru: str | None = None
 
 
 class EditorialCard(BaseModel):

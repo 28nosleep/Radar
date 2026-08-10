@@ -1,9 +1,10 @@
-# Radar — Intelligence Engine
+# Radar — Personal Editor
 
-A personal intelligence feed for one owner. The current M4 milestone is a fully
-working vertical slice:
+A personal English-language source editor for one owner: find a small number of
+materials worth opening, explain them in Russian, judge them critically, and preserve
+the original link. The current vertical slice is:
 
-`RSS / Hacker News / arXiv / GitHub / Reddit / YouTube → normalization → classification → deduplication → editorial gate → OpenAI → personal Telegram`
+`primary sources / discovery sensors / manual URL → deterministic gate → local EN→RU translation → critical editorial verdict → personal Telegram`
 
 The project never publishes anything to a channel. Telegram accepts only a positive
 numeric `chat_id`, meaning a personal chat; negative group and channel IDs are rejected.
@@ -52,6 +53,12 @@ uses a lease-backed pre-send claim, so a crash before the HTTP request can recov
 possibly accepted Telegram request is held separately and is never resent automatically;
 the owner may explicitly release it with `radar retry-delivery <material-uuid>`.
 
+Standalone translation never uses OpenAI. Final candidates are translated by the local
+LibreTranslate service and cached in PostgreSQL; if it is temporarily unavailable Radar
+uses the bounded English original. OpenAI is reserved for the final `STRONG`,
+`INTERESTING`, `WEAK`, `HYPE`, or `SKIP` editorial assessment. Automatic `SKIP` cards are
+not delivered; manually submitted links are always answered, including weak ones.
+
 ## Quick start
 
 Docker and Docker Compose are required.
@@ -60,6 +67,7 @@ Docker and Docker Compose are required.
 cp .env.example .env
 docker compose build
 docker compose up -d postgres
+docker compose up -d translator
 docker compose run --rm app alembic upgrade head
 docker compose run --rm app radar validate-config
 docker compose run --rm app radar run-once
@@ -97,8 +105,10 @@ thresholds and schedule values are defined in `.env.example`.
 ## Source catalog
 
 Sources live in `config/feeds.json`. Each has a stable `key`, name, URL, `0..1`
-reputation, enabled flag, and default categories. Removing a source from the catalog
-disables it in the database while preserving its history.
+reputation, enabled flag, source role, and default categories. `PRIMARY_NEWS` covers
+official/company and quality media feeds. Hacker News, GitHub, arXiv, YouTube, and
+optional Reddit are `DISCOVERY` sensors. Removing a source from the catalog disables it
+in the database while preserving its history.
 
 RSS/Atom uses ETag/Last-Modified. Hacker News uses the official Firebase API; it
 collects `top` by default (`new` or `best` can be selected in configuration) and 30
@@ -110,9 +120,7 @@ the others.
 GitHub searches configured queries for new repositories and stores stars, forks,
 language, topics, and the latest release. Small repositories remain in the database, but
 delivery additionally requires adoption, velocity, independent mentions, a known-team
-release, or an exceptional idea. Reddit collects approved subreddits with
-score/comments and post text; the catalog assigns a lower weight to `r/OpenAI`,
-`r/ControlProblem`, `r/technology`, and `r/ChatGPT`. YouTube uses the Data API for
+release, or an exceptional idea. YouTube uses the Data API for
 configured channels and search queries. It is enabled only after setting
 `F117_YOUTUBE_API_KEY` and changing the source in `config/feeds.json` to `enabled: true`.
 
@@ -122,14 +130,11 @@ RSS adapter with no blanket source boost: ordinary entertainment is rejected whi
 AI/cyberpunk/robots/hacking/transhumanism and technologically significant internet culture
 can qualify as `CYBERCULTURE`.
 
-Reddit uses the existing API-or-RSS collector. The cultural sensors are
-`r/Cyberpunk`, `r/scifi`, `r/transhumanism`, `r/InternetIsBeautiful`, `r/LV426`, and
-`r/bladerunner`; each public RSS source is merged across `new`, `hot`, and `rising` by
-post ID. RSS requests share a small global spacing/jitter policy, honor `Retry-After`,
-and use bounded exponential backoff for HTTP 429. A failed listing is logged and does
-not abort the collection cycle. `r/LV426` and `r/bladerunner` are cultural sensors:
-fan art, cosplay, merchandise, lore questions, nostalgia, and generic fandom chatter
-are rejected even when the franchise is relevant.
+Reddit is disabled in production by default (`F117_REDDIT_COLLECTION_ENABLED=false`).
+The existing RSS collector and semantic gate remain available as best-effort legacy
+functionality when explicitly enabled. Failures and HTTP 429 are logged and never block
+the rest of a collection cycle; Radar adds no scraping, proxies, unofficial APIs, or
+rate-limit workarounds.
 
 ## Metric history
 
@@ -159,15 +164,10 @@ Early materials with strong growth and moderate absolute popularity enter “Hid
 findings”. Telegram shows only confirmed growth signals or independent mentions;
 formulas and discovery score are available only in debug mode.
 
-When Reddit OAuth credentials are absent, Reddit falls back to the public RSS pipeline
-(`new`, `hot`, `rising`) with the same semantic event gate. This is not a run error and
-does not block RSS, HN, arXiv, GitHub, or YouTube. OAuth remains the preferred path when
-credentials are configured.
-
 ## Telegram
 
 `F117_TELEGRAM_FORMAT=editorial` is the default: each card contains a section, Russian
-title, short summary, “Why it matters” line, source, tags, and link. Service scores and
+title, neutral summary, critical `Что думает AI` block, source, tags, and link. Service scores and
 formula breakdowns are not included in the message. For diagnostics, set
 `F117_TELEGRAM_FORMAT=debug`; those details are then appended to the card.
 
@@ -178,6 +178,12 @@ creating a duplicate. The scheduler polls callbacks every 10 seconds by default;
 `radar poll-feedback` for one safe manual pass. Feedback is deliberately not used to
 change ranking in M5.
 
+An ordinary owner message containing an HTTP(S) URL triggers Share → Radar intake. Radar
+normalizes and deduplicates the URL, safely fetches bounded public metadata/content, then
+runs the same classification, ranking, translation, and editorial stages. Every redirect
+is checked against localhost/private/internal addresses. Reddit URLs are accepted; when
+Reddit exposes too little content Radar reports that limitation instead of bypassing it.
+
 ## Quality and calibration reports
 
 Use these local CLI reports after collecting some real history:
@@ -187,11 +193,12 @@ radar quality-report --days 7
 radar discovery-report --days 7
 ```
 
-The quality report breaks down collected, TOP-selected, sent, useful, miss, and post-fit
-materials per source, plus average importance and discovery scores. The discovery report
-shows distributions of importance score, discovery score, and growth per hour, together
-with current rising and hidden-gem candidates. It explicitly reports when the data is too
-small for meaningful calibration.
+The quality report treats feedback as the main product signal: delivered, useful, missed,
+saved, useful rate, and save rate, with category and source breakdowns plus explicit lists
+of sources producing the most misses and saves. The discovery report shows distributions
+of importance score, discovery score, and growth per hour, together with current rising
+and hidden-gem candidates. It explicitly reports when the data is too small for meaningful
+calibration.
 
 Before editorial enrichment, a soft diversity layer prefers a mix of sources, recognized
 companies/projects, and categories. Default caps are two cards per source, two per known
@@ -207,8 +214,8 @@ three-day window. When in doubt, publications remain separate.
 
 The original explainable `0..100` importance score still includes freshness, reputation,
 independent mentions, popularity, growth velocity, novelty, topic affinity, and
-unusualness. A separate deterministic `editorial_fit` asks whether id:28's audience would
-open the story. Delivery uses a weighted score (65% editorial fit by default), plus hard
+unusualness. A separate deterministic `editorial_fit` asks whether the owner would open
+the story. Delivery uses a weighted score (65% editorial fit by default), plus hard
 minimums for editorial fit and the combined delivery score. Enterprise minutiae,
 specialist-only papers, weak GitHub projects, and generic entertainment cannot buy a slot
 with technical relevance or popularity alone. Entity names such as OpenAI, Anthropic,

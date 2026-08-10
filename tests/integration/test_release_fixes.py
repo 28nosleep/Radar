@@ -149,7 +149,6 @@ async def test_changed_undelivered_content_invalidates_cached_enrichment(
         EditorialEnrichment(
             title_ru="Старый заголовок",
             summary_ru="Старое GPT резюме",
-            why_important="Старый смысл",
             post_fit_score=7,
         ),
         model="test",
@@ -317,7 +316,6 @@ async def test_cached_and_editorial_retries_share_the_fresh_slot_reservation(
         EditorialEnrichment(
             title_ru="Cached",
             summary_ru="Cached summary",
-            why_important="Cached importance",
             post_fit_score=7,
         ),
         model="test",
@@ -368,7 +366,6 @@ async def test_two_cached_retries_still_leave_a_fresh_slot(
             EditorialEnrichment(
                 title_ru="Cached",
                 summary_ru="Cached summary",
-                why_important="Cached importance",
                 post_fit_score=7,
             ),
             model="test",
@@ -412,7 +409,6 @@ async def test_retries_fill_digest_when_no_fresh_candidate_exists(
         EditorialEnrichment(
             title_ru="Cached",
             summary_ru="Cached summary",
-            why_important="Cached importance",
             post_fit_score=7,
         ),
         model="test",

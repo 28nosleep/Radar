@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import re
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from uuid import UUID
 import aiohttp
 
 from f117.domain import Category, EditorialCard, FeedbackType
+from f117.services.manual_intake import ManualIntakeResult
 
 TELEGRAM_TEXT_LIMIT = 4096
 TELEGRAM_CAPTION_BUDGET = 900
@@ -62,9 +64,14 @@ class FeedbackStore(Protocol):
         telegram_update_id: int | None = None,
     ) -> object: ...
 
+    async def record_manual_delivery(
+        self, *, material_id: UUID, telegram_message_id: str
+    ) -> None: ...
+
 
 DeliveryCallback = Callable[[DeliveryReceipt], Awaitable[None]]
 DeliveryStartCallback = Callable[[UUID], Awaitable[None]]
+ManualURLHandler = Callable[[str], Awaitable[ManualIntakeResult]]
 
 
 class DigestNotifier(Protocol):
@@ -132,7 +139,7 @@ class TelegramNotifier:
         receipts: list[DeliveryReceipt] = []
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
             await self._send_message(
-                session, f"<b>id:28</b> · {len(cards)} материалов", disable_preview=True
+                session, f"<b>Radar</b> · {len(cards)} материалов", disable_preview=True
             )
             for card, rendered in rendered_cards:
                 if on_delivering is not None:
@@ -293,7 +300,7 @@ class TelegramNotifier:
 
 
 class TelegramFeedbackPoller:
-    """One bounded long-poll pass for owner-only inline feedback callbacks."""
+    """One bounded poll pass for owner feedback and private URL submissions."""
 
     def __init__(
         self,
@@ -303,6 +310,7 @@ class TelegramFeedbackPoller:
         store: FeedbackStore,
         api_base: str = "https://api.telegram.org",
         timeout_seconds: float = 20.0,
+        manual_handler: ManualURLHandler | None = None,
     ) -> None:
         if not chat_id.isdigit() or int(chat_id) <= 0:
             raise ValueError("F117_TELEGRAM_CHAT_ID must be a positive numeric private-chat ID")
@@ -310,10 +318,14 @@ class TelegramFeedbackPoller:
         self.chat_id = chat_id
         self.store = store
         self.timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+        self.manual_handler = manual_handler
 
     async def poll_once(self) -> int:
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
-            request: dict[str, object] = {"allowed_updates": ["callback_query"]}
+            allowed = ["callback_query"]
+            if self.manual_handler is not None:
+                allowed.append("message")
+            request: dict[str, object] = {"allowed_updates": allowed}
             if latest_update_id := await self.store.latest_telegram_update_id():
                 request["offset"] = latest_update_id + 1
             payload = await self._request(session, "getUpdates", request)
@@ -323,23 +335,67 @@ class TelegramFeedbackPoller:
             processed = 0
             for update in updates:
                 callback = _parse_feedback_callback(update, expected_chat_id=self.chat_id)
-                if callback is None:
-                    update_id = update.get("update_id") if isinstance(update, dict) else None
-                    if isinstance(update_id, int):
-                        await self.store.mark_telegram_update_processed(update_id)
+                if callback is not None:
+                    saved = await self.store.record_feedback(
+                        material_id=callback.material_id,
+                        feedback_type=callback.feedback_type,
+                        telegram_update_id=callback.update_id,
+                    )
+                    text = "Оценка сохранена" if saved is not None else "Оценка уже обработана"
+                    await self._request(
+                        session,
+                        "answerCallbackQuery",
+                        {"callback_query_id": callback.callback_id, "text": text},
+                    )
+                    processed += int(saved is not None)
                     continue
-                saved = await self.store.record_feedback(
-                    material_id=callback.material_id,
-                    feedback_type=callback.feedback_type,
-                    telegram_update_id=callback.update_id,
-                )
-                text = "Оценка сохранена" if saved is not None else "Оценка уже обработана"
-                await self._request(
-                    session,
-                    "answerCallbackQuery",
-                    {"callback_query_id": callback.callback_id, "text": text},
-                )
-                processed += int(saved is not None)
+
+                manual = _parse_manual_url_message(update, expected_chat_id=self.chat_id)
+                if manual is not None and self.manual_handler is not None:
+                    update_id, url = manual
+                    try:
+                        intake = await self.manual_handler(url)
+                        card = intake.card
+                        response = await self._request(
+                            session,
+                            "sendMessage",
+                            {
+                                "chat_id": self.chat_id,
+                                "text": render_card(card),
+                                "parse_mode": "HTML",
+                                "disable_web_page_preview": True,
+                                "reply_markup": _reply_markup(
+                                    card.material.material_id, card.material.url
+                                ),
+                            },
+                        )
+                        result = response.get("result")
+                        message_id = result.get("message_id") if isinstance(result, dict) else None
+                        if not isinstance(message_id, int | str):
+                            raise TelegramError("Telegram sendMessage returned no message_id")
+                        await self.store.record_manual_delivery(
+                            material_id=card.material.material_id,
+                            telegram_message_id=str(message_id),
+                        )
+                    except Exception as exc:
+                        await self._request(
+                            session,
+                            "sendMessage",
+                            {
+                                "chat_id": self.chat_id,
+                                "text": "Не удалось безопасно обработать ссылку: "
+                                f"{html.escape(str(exc))}",
+                                "parse_mode": "HTML",
+                                "disable_web_page_preview": True,
+                            },
+                        )
+                    await self.store.mark_telegram_update_processed(update_id)
+                    processed += 1
+                    continue
+
+                raw_update_id = update.get("update_id") if isinstance(update, dict) else None
+                if isinstance(raw_update_id, int):
+                    await self.store.mark_telegram_update_processed(raw_update_id)
             return processed
 
     async def _request(
@@ -381,8 +437,7 @@ def render_card(card: EditorialCard, *, section: str | None = None, debug: bool 
         f"{_escape_bounded(section or _section_for(card), 80)}\n\n"
         f"<b>{_escape_bounded(enrichment.title_ru, 220)}</b>\n\n"
         f"{_escape_bounded(enrichment.summary_ru, 380)}\n\n"
-        f"<b>Почему это важно:</b> {_escape_bounded(enrichment.why_important, 220)}\n\n"
-        f"📡 <b>id:28:</b> {_escape_bounded(_id28_comment(enrichment.ironic_comment), 190)}\n\n"
+        f"<b>Что думает AI:</b> {_escape_bounded(enrichment.ai_opinion, 600)}\n\n"
         f"Источник: {_escape_bounded(material.source_name, 160)}\n\n"
         f"{hashtags}\n\n"
         f'<a href="{link}">Открыть материал</a>'
@@ -408,14 +463,14 @@ def render_card(card: EditorialCard, *, section: str | None = None, debug: bool 
 
 
 def render_digest(cards: Sequence[EditorialCard]) -> str:
-    chunks = [f"id:28 — Intelligence Engine · {len(cards)} материалов"]
+    chunks = [f"Radar · {len(cards)} материалов"]
     for section, section_cards in group_cards(cards).items():
         chunks.append(f"\n{section}")
         for card in section_cards:
             chunks.append(
                 f"- {card.enrichment.title_ru}\n"
                 f"  {card.enrichment.summary_ru}\n"
-                f"  Почему это важно: {card.enrichment.why_important}\n"
+                f"  Что думает AI: {card.enrichment.ai_opinion}\n"
                 f"  Источник: {card.material.source_name}\n"
                 f"  {_display_url(card.material.url)}"
             )
@@ -493,13 +548,6 @@ def _growth_line(metrics: dict[str, float]) -> str | None:
     if percent is None or hours is None or percent <= 0 or hours <= 0:
         return None
     return f"Набирает: +{percent:.0f}% за {hours:.1f} ч"
-
-
-def _id28_comment(value: str) -> str:
-    comment = value.strip()
-    if comment.casefold().startswith("id:28:"):
-        return comment[len("id:28:") :].strip()
-    return comment
 
 
 def _reply_markup(material_id: UUID, link_url: str) -> dict[str, object]:
@@ -600,3 +648,24 @@ def _parse_feedback_callback(
         )
     except ValueError:
         return None
+
+
+_URL_RE = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
+
+
+def _parse_manual_url_message(update: object, *, expected_chat_id: str) -> tuple[int, str] | None:
+    if not isinstance(update, dict) or not isinstance(update.get("update_id"), int):
+        return None
+    message = update.get("message")
+    if not isinstance(message, dict):
+        return None
+    chat = message.get("chat")
+    if not isinstance(chat, dict) or str(chat.get("id")) != expected_chat_id:
+        return None
+    text = message.get("text") or message.get("caption")
+    if not isinstance(text, str):
+        return None
+    match = _URL_RE.search(text)
+    if match is None:
+        return None
+    return int(update["update_id"]), match.group(0).rstrip(".,;:!?)]}")

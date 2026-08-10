@@ -257,6 +257,7 @@ def score_material(
         description=material.item.description,
         categories=list(material.item.categories),
         popularity=dict(material.item.popularity),
+        qualitative_signals=list(material.item.qualitative_signals),
         media_type=material.item.media_type,
         media_url=material.item.media_url,
         thumbnail_url=material.item.thumbnail_url,

@@ -18,6 +18,7 @@ from f117.adapters.telegram import (
     TelegramFeedbackPoller,
     TelegramNotifier,
 )
+from f117.adapters.translation import LocalTranslationProvider, TranslatingEditorialEnricher
 from f117.adapters.youtube import YouTubeCollector
 from f117.config import Settings
 from f117.services.digest import DigestService
@@ -38,7 +39,11 @@ def validate_settings(settings: Settings) -> None:
     except (OSError, ValueError) as exc:
         errors.append(f"Source catalog cannot be loaded: {exc}")
         sources = []
-    enabled_sources = [source for source in sources if source.enabled]
+    enabled_sources = [
+        source
+        for source in sources
+        if source.enabled and (settings.reddit_collection_enabled or source.kind != "reddit")
+    ]
     if not enabled_sources:
         errors.append("Source catalog must contain at least one enabled source")
     source_keys = [source.key for source in sources]
@@ -132,29 +137,44 @@ def build_digest_service(settings: Settings, repository: Repository) -> DigestSe
             api_key=_secret_value(settings.youtube_api_key),
         ),
     )
+    translation = LocalTranslationProvider(
+        base_url=settings.translation_base_url,
+        cache=repository,
+        timeout_seconds=settings.translation_timeout_seconds,
+        max_input_chars=settings.translation_max_input_chars,
+        enabled=settings.translation_enabled and not settings.dry_run,
+        max_concurrency=settings.translation_max_concurrency,
+    )
     return DigestService(
         settings=settings,
         repository=repository,
         collector=collector,
-        enricher=enricher,
+        enricher=TranslatingEditorialEnricher(translation, enricher),
         notifier=notifier,
     )
 
 
 def build_feedback_poller(
-    settings: Settings, repository: Repository
+    settings: Settings,
+    repository: Repository,
+    digest_service: DigestService | None = None,
 ) -> TelegramFeedbackPoller | None:
     if settings.dry_run or not settings.telegram_feedback_enabled or not settings.telegram_enabled:
         return None
     token = _secret_value(settings.telegram_bot_token)
     if not token or settings.telegram_chat_id is None:
         raise ConfigurationError("Telegram credentials are missing for feedback polling")
+    manual_handler = None
+    if settings.manual_intake_enabled:
+        service = digest_service or build_digest_service(settings, repository)
+        manual_handler = service.process_manual_url
     return TelegramFeedbackPoller(
         bot_token=token,
         chat_id=settings.telegram_chat_id,
         store=repository,
         api_base=settings.telegram_api_base,
         timeout_seconds=settings.http_timeout_seconds,
+        manual_handler=manual_handler,
     )
 
 

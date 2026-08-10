@@ -30,6 +30,7 @@ from f117.storage.models import (
     MetricSnapshotModel,
     SourceModel,
     TelegramUpdateModel,
+    TranslationCacheModel,
 )
 
 
@@ -102,6 +103,30 @@ class Repository:
                 for source in sources
                 if source.enabled
             ]
+
+    async def ensure_source(self, source: FeedSource) -> SourceState:
+        """Create or refresh one manual source without disabling catalog sources."""
+
+        async with self.database.session() as session:
+            row = await session.scalar(select(SourceModel).where(SourceModel.key == source.key))
+            values = {
+                "name": source.name,
+                "feed_url": str(source.feed_url),
+                "site_url": str(source.site_url) if source.site_url else None,
+                "reputation": source.reputation,
+                "enabled": source.enabled,
+                "default_categories": [value.value for value in source.default_categories],
+            }
+            if row is None:
+                row = SourceModel(key=source.key, **values)
+                session.add(row)
+            else:
+                for key, value in values.items():
+                    setattr(row, key, value)
+            await session.commit()
+            return SourceState(
+                id=row.id, source=source, etag=row.etag, last_modified=row.last_modified
+            )
 
     async def record_source_result(
         self,
@@ -308,11 +333,42 @@ class Repository:
                     row.editorial_retry_at = None
                     row.editorial_error = None
                     row.editorial_failed_at = None
+                    row.editorial_rejected_at = None
             row.qualitative_signals = sorted(
                 set(row.qualitative_signals).union(item.qualitative_signals)
             )
             await self._record_metrics(session, row, item.popularity, captured_at)
             await session.commit()
+
+    async def mark_manual_submission(
+        self, material_id: UUID, *, content_insufficient: bool = False
+    ) -> StoredMaterial:
+        """Promote an existing canonical material for an explicit owner review."""
+
+        async with self.database.session() as session:
+            row = await session.scalar(
+                select(MaterialModel)
+                .where(MaterialModel.id == material_id)
+                .options(selectinload(MaterialModel.source))
+            )
+            if row is None:
+                raise LookupError(f"Unknown material: {material_id}")
+            signals = {"manual_submission"}
+            if content_insufficient and not row.description.strip():
+                signals.add("manual_content_insufficient")
+            row.qualitative_signals = sorted(set(row.qualitative_signals).union(signals))
+            # Manual intake asks for a current assessment even if an older card exists.
+            row.llm_enrichment = None
+            row.llm_model = None
+            row.llm_usage = None
+            row.editorial_attempts = 0
+            row.editorial_retry_at = None
+            row.editorial_failed_at = None
+            row.editorial_rejected_at = None
+            await session.flush()
+            stored = self._to_stored(row)
+            await session.commit()
+            return stored
 
     async def _record_metrics(
         self,
@@ -485,6 +541,7 @@ class Repository:
                     ),
                     MaterialModel.delivery_ambiguous_at.is_(None),
                     MaterialModel.editorial_failed_at.is_(None),
+                    MaterialModel.editorial_rejected_at.is_(None),
                     or_(
                         MaterialModel.editorial_retry_at.is_(None),
                         MaterialModel.editorial_retry_at <= now,
@@ -522,6 +579,42 @@ class Repository:
                 )
             )
             await session.commit()
+
+    async def mark_editorial_rejected(self, material_id: UUID) -> None:
+        async with self.database.session() as session:
+            await session.execute(
+                update(MaterialModel)
+                .where(MaterialModel.id == material_id)
+                .values(editorial_rejected_at=datetime.now(UTC))
+            )
+            await session.commit()
+
+    async def cached_translation(self, cache_key: str) -> str | None:
+        async with self.database.session() as session:
+            row = await session.get(TranslationCacheModel, cache_key)
+            return row.translated_text if row is not None else None
+
+    async def store_translation(
+        self,
+        *,
+        cache_key: str,
+        source_language: str,
+        target_language: str,
+        source_text_hash: str,
+        translated_text: str,
+    ) -> None:
+        async with self.database.session() as session:
+            if await session.get(TranslationCacheModel, cache_key) is None:
+                session.add(
+                    TranslationCacheModel(
+                        cache_key=cache_key,
+                        source_language=source_language,
+                        target_language=target_language,
+                        source_text_hash=source_text_hash,
+                        translated_text=translated_text,
+                    )
+                )
+                await session.commit()
 
     async def record_editorial_failure(
         self,
@@ -699,6 +792,39 @@ class Repository:
                 )
             await session.commit()
 
+    async def record_manual_delivery(self, *, material_id: UUID, telegram_message_id: str) -> None:
+        """Record a Share -> Radar response as a delivered one-card manual run."""
+
+        sent_at = datetime.now(UTC)
+        async with self.database.session() as session:
+            material = await session.get(MaterialModel, material_id)
+            if material is None:
+                raise LookupError(f"Unknown material: {material_id}")
+            run = DigestRunModel(
+                dry_run=False,
+                status="completed",
+                finished_at=sent_at,
+                candidate_count=1,
+                selected_count=1,
+                delivered_count=1,
+            )
+            session.add(run)
+            await session.flush()
+            session.add(
+                DeliveryModel(
+                    digest_run_id=run.id,
+                    material_id=material_id,
+                    telegram_message_id=telegram_message_id,
+                    sent_at=sent_at,
+                )
+            )
+            material.delivered_at = sent_at
+            material.delivery_started_at = None
+            material.delivery_ambiguous_at = None
+            material.delivery_retry_at = None
+            material.delivery_error = None
+            await session.commit()
+
     async def record_feedback(
         self,
         *,
@@ -852,11 +978,7 @@ class Repository:
             score_reasons=row.score_reasons,
             discovery_score=row.discovery_score,
             delivered_at=row.delivered_at,
-            llm_enrichment=(
-                EditorialEnrichment.model_validate(row.llm_enrichment)
-                if row.llm_enrichment is not None
-                else None
-            ),
+            llm_enrichment=_stored_enrichment(row.llm_enrichment),
             llm_model=row.llm_model,
             llm_usage=row.llm_usage or {},
             editorial_attempts=row.editorial_attempts,
@@ -887,6 +1009,17 @@ _DERIVED_METRIC_KEYS = frozenset(
 
 def _provider_family(source_key: str) -> str:
     return "reddit" if source_key.startswith("reddit-") else source_key
+
+
+def _stored_enrichment(payload: dict[str, Any] | None) -> EditorialEnrichment | None:
+    """Ignore legacy cards so deprecated commentary can never reach rendering."""
+
+    if payload is None or "ai_opinion" not in payload or "ai_verdict" not in payload:
+        return None
+    try:
+        return EditorialEnrichment.model_validate(payload)
+    except ValueError:
+        return None
 
 
 def _aggregate_metrics(metric_sets: list[dict[str, float]]) -> dict[str, float]:

@@ -226,7 +226,6 @@ class _CountingEnricher:
                 enrichment=EditorialEnrichment(
                     title_ru=f"RU: {material.title}",
                     summary_ru="summary",
-                    why_important="important",
                     post_fit_score=8,
                 ),
                 llm_model="test-model",
@@ -526,7 +525,7 @@ async def test_etag_checkpoint_is_not_advanced_when_ingest_fails(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_reddit_failure_does_not_block_other_sources(tmp_path: Path) -> None:
+async def test_reddit_429_does_not_block_other_sources(tmp_path: Path) -> None:
     catalog = tmp_path / "sources.json"
     catalog.write_text(
         json.dumps(
@@ -553,12 +552,18 @@ async def test_reddit_failure_does_not_block_other_sources(tmp_path: Path) -> No
             last_modified: str | None = None,
         ) -> FeedFetchResult:
             if source.kind == "reddit":
-                raise RuntimeError("Reddit OAuth returned HTTP 401")
+                raise RuntimeError("Reddit RSS returned HTTP 429")
             return await super().fetch(source, etag=etag, last_modified=last_modified)
 
     repository = _MemoryRepository()
     service = DigestService(
-        settings=Settings(_env_file=None, rss_catalog_path=catalog, digest_top_n=1, dry_run=False),
+        settings=Settings(
+            _env_file=None,
+            rss_catalog_path=catalog,
+            digest_top_n=1,
+            dry_run=False,
+            reddit_collection_enabled=True,
+        ),
         repository=repository,  # type: ignore[arg-type]
         collector=RedditFailingCollector(
             {"rss": [_item("rss", "1", "AI update", "https://example.com/ai", reputation=0.8)]}
@@ -572,6 +577,48 @@ async def test_reddit_failure_does_not_block_other_sources(tmp_path: Path) -> No
     assert summary.status == "completed_with_errors"
     assert summary.inserted_count == 1
     assert summary.source_failures[0].source_key == "reddit-ai"
+
+
+@pytest.mark.asyncio
+async def test_reddit_disabled_is_not_in_collection_critical_path(tmp_path: Path) -> None:
+    catalog = tmp_path / "sources.json"
+    catalog.write_text(
+        json.dumps(
+            [
+                {"key": "rss", "name": "RSS", "feed_url": "https://rss.example/feed"},
+                {
+                    "key": "reddit-ai",
+                    "name": "Reddit AI",
+                    "kind": "reddit",
+                    "feed_url": "https://www.reddit.com",
+                    "reddit_subreddit": "artificial",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class Collector(_Collector):
+        async def fetch(self, source: FeedSource, **kwargs: object) -> FeedFetchResult:
+            if source.kind == "reddit":
+                raise AssertionError("disabled Reddit collector must not be called")
+            return await super().fetch(source, **kwargs)  # type: ignore[arg-type]
+
+    repository = _MemoryRepository()
+    service = DigestService(
+        settings=Settings(_env_file=None, rss_catalog_path=catalog, dry_run=False),
+        repository=repository,  # type: ignore[arg-type]
+        collector=Collector(
+            {"rss": [_item("rss", "1", "AI update", "https://example.com/ai", reputation=0.8)]}
+        ),  # type: ignore[arg-type]
+        enricher=_CountingEnricher(),
+        notifier=_Notifier(),
+    )
+
+    summary = await service.run_once()
+
+    assert summary.status == "completed"
+    assert "reddit-ai" not in repository.source_ids
 
 
 def test_cached_gpt_cards_are_fifo_before_a_reserved_fresh_slot() -> None:
@@ -617,7 +664,6 @@ def test_cached_gpt_cards_are_fifo_before_a_reserved_fresh_slot() -> None:
                 EditorialEnrichment(
                     title_ru="Готово",
                     summary_ru="Уже обработано GPT.",
-                    why_important="Нужно повторить доставку.",
                     post_fit_score=8,
                 )
                 if cached

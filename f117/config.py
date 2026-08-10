@@ -74,7 +74,19 @@ class Settings(BaseSettings):
     github_api_token: SecretStr | None = None
     reddit_client_id: SecretStr | None = None
     reddit_client_secret: SecretStr | None = None
+    reddit_collection_enabled: bool = False
     youtube_api_key: SecretStr | None = None
+
+    translation_enabled: bool = True
+    translation_base_url: str = "http://translator:5000"
+    translation_timeout_seconds: float = Field(default=20.0, ge=1.0, le=120.0)
+    translation_max_input_chars: int = Field(default=1800, ge=100, le=5000)
+    translation_max_concurrency: int = Field(default=1, ge=1, le=4)
+
+    manual_intake_enabled: bool = True
+    manual_fetch_timeout_seconds: float = Field(default=12.0, ge=1.0, le=30.0)
+    manual_fetch_redirect_limit: int = Field(default=4, ge=0, le=10)
+    manual_fetch_max_response_bytes: int = Field(default=500_000, ge=10_000, le=2_000_000)
 
     rank_freshness_weight: float = Field(default=20.0, ge=0.0)
     rank_reputation_weight: float = Field(default=15.0, ge=0.0)
@@ -108,7 +120,7 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5.6-terra"
     openai_reasoning_effort: Literal["none", "low", "medium", "high"] = "low"
     openai_max_concurrency: int = Field(default=3, ge=1, le=10)
-    openai_max_output_tokens: int = Field(default=500, ge=100, le=2000)
+    openai_max_output_tokens: int = Field(default=900, ge=400, le=2000)
     editorial_max_attempts: int = Field(default=3, ge=1, le=10)
     editorial_retry_base_seconds: int = Field(default=60, ge=1, le=3600)
     editorial_retry_max_seconds: int = Field(default=3600, ge=1, le=86400)

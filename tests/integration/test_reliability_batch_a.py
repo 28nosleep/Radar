@@ -177,7 +177,6 @@ class _Enricher:
                 enrichment=EditorialEnrichment(
                     title_ru=material.title,
                     summary_ru="Короткое резюме.",
-                    why_important="Практически важное обновление.",
                     post_fit_score=8,
                 ),
                 llm_model="test-model",

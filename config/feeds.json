@@ -36,6 +36,28 @@
     "default_categories": ["ai", "research"]
   },
   {
+    "key": "meta-ai-research",
+    "name": "Meta Engineering: AI Research",
+    "feed_url": "https://engineering.fb.com/category/ai-research/feed/",
+    "site_url": "https://engineering.fb.com/category/ai-research/",
+    "item_limit": 20,
+    "reputation": 0.95,
+    "enabled": true,
+    "role": "primary_news",
+    "default_categories": ["ai", "research"]
+  },
+  {
+    "key": "boston-dynamics",
+    "name": "Boston Dynamics",
+    "feed_url": "https://bostondynamics.com/feed/",
+    "site_url": "https://bostondynamics.com/blog/",
+    "item_limit": 20,
+    "reputation": 0.95,
+    "enabled": true,
+    "role": "primary_news",
+    "default_categories": ["robotics"]
+  },
+  {
     "key": "hacker-news",
     "name": "Hacker News",
     "kind": "hacker_news",

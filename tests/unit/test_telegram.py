@@ -14,6 +14,7 @@ from f117.adapters.telegram import (
     TelegramError,
     TelegramFeedbackPoller,
     TelegramNotifier,
+    _parse_manual_url_message,
     group_cards,
     render_card,
 )
@@ -39,7 +40,6 @@ def _card(category: Category, *, title: str = "Item") -> EditorialCard:
         enrichment=EditorialEnrichment(
             title_ru=title,
             summary_ru="Summary <unsafe>",
-            why_important="Because & now",
             post_fit_score=8,
         ),
     )
@@ -48,6 +48,21 @@ def _card(category: Category, *, title: str = "Item") -> EditorialCard:
 def test_notifier_rejects_groups_and_channels() -> None:
     with pytest.raises(ValueError, match="private-chat"):
         TelegramNotifier(bot_token="token", chat_id="-100123")
+
+
+def test_private_telegram_message_extracts_manual_url() -> None:
+    parsed = _parse_manual_url_message(
+        {
+            "update_id": 77,
+            "message": {
+                "chat": {"id": 123},
+                "text": "Посмотри https://www.reddit.com/r/robotics/comments/abc/demo/.",
+            },
+        },
+        expected_chat_id="123",
+    )
+
+    assert parsed == (77, "https://www.reddit.com/r/robotics/comments/abc/demo/")
 
 
 def test_render_card_escapes_untrusted_html() -> None:
@@ -89,7 +104,7 @@ def test_cyberculture_uses_its_own_clean_editorial_section_and_tag() -> None:
 def test_editorial_card_is_human_readable_and_hides_debug_metrics() -> None:
     rendered = render_card(_card(Category.RESEARCH))
 
-    assert "Почему это важно:" in rendered
+    assert "Что думает AI:" in rendered
     assert "Источник:" in rendered
     assert "#Research #Technology" in rendered
     assert "Теги:" not in rendered
@@ -98,8 +113,8 @@ def test_editorial_card_is_human_readable_and_hides_debug_metrics() -> None:
     assert "score" not in rendered.casefold()
     assert "freshness" not in rendered
     assert rendered.startswith("📄 Исследования\n\n")
-    assert "Комментарий id:28:" not in rendered
-    assert "📡 <b>id:28:</b>" in rendered
+    assert "Почему это важно:" not in rendered
+    assert "id:28" not in rendered
     assert "&gt;_" not in rendered
     for decoration in ("сигнал принят", "аномалия обнаружена", "объект замечен", "новая сборка"):
         assert decoration not in rendered
@@ -287,8 +302,13 @@ async def test_long_image_caption_uses_complete_text_fallback(
                 update={
                     "title_ru": "t" * 220,
                     "summary_ru": "x" * 900,
-                    "why_important": "w" * 220,
-                    "ironic_comment": "i" * 190,
+                    "ai_opinion": (
+                        "Фактическая база материала остаётся ограниченной, несмотря на громкую "
+                        "подачу и уверенный заголовок. Независимых подтверждений, измеримого "
+                        "внедрения и данных о реальном использовании здесь пока нет. Поэтому это "
+                        "скорее предварительный сигнал, чем новость, требующая немедленного "
+                        "внимания."
+                    ),
                 }
             ),
         }

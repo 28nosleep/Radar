@@ -13,7 +13,7 @@ from f117.adapters.openai_editorial import (
     OpenAIEditorialEnricher,
     ResilientEditorialEnricher,
 )
-from f117.domain import Category, EditorialCard, EditorialEnrichment, RankedMaterial
+from f117.domain import AIVerdict, Category, EditorialCard, EditorialEnrichment, RankedMaterial
 
 
 def _material(title: str = "A new robot") -> RankedMaterial:
@@ -40,7 +40,7 @@ async def test_deterministic_editorial_fallback_is_free_and_stable() -> None:
     assert cards[0].material == material
     assert cards[0].llm_model is None
     assert cards[0].enrichment.post_fit_score == 8
-    assert "freshness" not in cards[0].enrichment.why_important
+    assert "freshness" not in cards[0].enrichment.ai_opinion
 
 
 class _SometimesFailingEnricher:
@@ -54,7 +54,6 @@ class _SometimesFailingEnricher:
                 enrichment=EditorialEnrichment(
                     title_ru="Успех",
                     summary_ru="Резюме",
-                    why_important="Важно",
                     post_fit_score=9,
                 ),
                 llm_model="test-model",
@@ -87,7 +86,6 @@ class _FakeResponses:
             output_parsed=EditorialEnrichment(
                 title_ru="Новый робот",
                 summary_ru="Кратко",
-                why_important="Новая возможность",
                 post_fit_score=8,
             ),
             usage=SimpleNamespace(input_tokens=100, output_tokens=50, total_tokens=150),
@@ -114,3 +112,48 @@ async def test_openai_adapter_uses_structured_responses_without_a_live_call() ->
     assert fake_responses.arguments["text_format"] is EditorialEnrichment
     assert fake_responses.arguments["store"] is False
     assert fake_responses.arguments["reasoning"] == {"effort": "low"}
+    assert card.enrichment.ai_verdict == AIVerdict.WEAK
+    assert "ironic_comment" not in EditorialEnrichment.model_json_schema()["properties"]
+
+
+@pytest.mark.asyncio
+async def test_openai_adapter_regenerates_once_after_invalid_editorial_output() -> None:
+    class Responses:
+        calls = 0
+
+        async def parse(self, **_: Any) -> Any:
+            self.calls += 1
+            if self.calls == 1:
+                raise ValueError("AI opinion must end with a complete sentence")
+            return SimpleNamespace(
+                output_parsed=EditorialEnrichment(
+                    title_ru="Новый робот",
+                    summary_ru="Компания показала новый прототип.",
+                    ai_opinion=(
+                        "Компания показывает эффектный прототип, но не приводит независимых "
+                        "измерений надёжности и данных о реальном внедрении. Поэтому громкий "
+                        "заголовок пока сильнее фактической базы, а практическую ценность рано "
+                        "считать доказанной. Это интересный сигнал для наблюдения, но не готовый "
+                        "продукт."
+                    ),
+                    ai_verdict=AIVerdict.INTERESTING,
+                    post_fit_score=7,
+                ),
+                usage=None,
+                model="gpt-test",
+            )
+
+    responses = Responses()
+    enricher = OpenAIEditorialEnricher(
+        api_key="test-key",
+        model="gpt-test",
+        reasoning_effort="low",
+        max_output_tokens=900,
+        max_concurrency=1,
+    )
+    enricher.client = cast(Any, SimpleNamespace(responses=responses))
+
+    card = (await enricher.enrich([_material()]))[0]
+
+    assert responses.calls == 2
+    assert card.enrichment.ai_opinion.endswith("продукт.")

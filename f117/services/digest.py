@@ -9,6 +9,7 @@ from typing import Literal
 from uuid import UUID, uuid4
 
 from f117.adapters.collectors import SourceCollector
+from f117.adapters.manual_url import SafeManualURLFetcher
 from f117.adapters.media import MetadataMediaFetcher
 from f117.adapters.openai_editorial import DeterministicEditorialEnricher, EditorialEnricher
 from f117.adapters.rss import FeedFetchResult
@@ -20,7 +21,7 @@ from f117.adapters.telegram import (
     render_digest,
 )
 from f117.config import Settings
-from f117.domain import Category, EditorialCard, RankedMaterial, StoredMaterial
+from f117.domain import AIVerdict, Category, EditorialCard, RankedMaterial, StoredMaterial
 from f117.pipeline.classifier import classify_item
 from f117.pipeline.deduplicator import duplicate_reason, find_duplicate
 from f117.pipeline.discovery import DiscoveryConfig, assess_discovery
@@ -28,6 +29,7 @@ from f117.pipeline.diversity import DiversityConfig, diversify, soft_balance_cyb
 from f117.pipeline.editorial import EditorialConfig, assess_editorial_fit
 from f117.pipeline.normalizer import normalize_item
 from f117.pipeline.ranking import RankingConfig, score_material
+from f117.services.manual_intake import ManualIntakeResult, ManualIntakeService
 from f117.storage.repository import Repository, SourceState
 
 logger = logging.getLogger(__name__)
@@ -129,6 +131,22 @@ class DigestService:
             max_response_bytes=settings.metadata_fetch_max_response_bytes,
             user_agent=settings.http_user_agent,
         )
+        self.manual_intake = ManualIntakeService(
+            settings=settings,
+            repository=repository,
+            fetcher=SafeManualURLFetcher(
+                timeout_seconds=settings.manual_fetch_timeout_seconds,
+                redirect_limit=settings.manual_fetch_redirect_limit,
+                max_response_bytes=settings.manual_fetch_max_response_bytes,
+                user_agent=settings.http_user_agent,
+            ),
+            enricher=enricher,
+            ranking_config=self.ranking_config,
+            editorial_config=self.editorial_config,
+        )
+
+    async def process_manual_url(self, url: str) -> ManualIntakeResult:
+        return await self.manual_intake.process(url)
 
     async def run_once(
         self,
@@ -174,9 +192,12 @@ class DigestService:
             source_results: Sequence[_SourceResult] = ()
             recent: list[StoredMaterial] = []
             if collect and not self.settings.dry_run:
-                source_states = await self.repository.sync_sources(
-                    self.settings.load_feed_sources()
-                )
+                configured_sources = [
+                    source
+                    for source in self.settings.load_feed_sources()
+                    if self.settings.reddit_collection_enabled or source.kind != "reddit"
+                ]
+                source_states = await self.repository.sync_sources(configured_sources)
                 source_results = await asyncio.gather(
                     *(self._fetch_source(state) for state in source_states)
                 )
@@ -359,6 +380,18 @@ class DigestService:
             await self.repository.record_selection([material.material_id for material in selected])
 
             cards, editorial_failures = await self._editorial_cards(selected, candidates)
+            deliverable_cards: list[EditorialCard] = []
+            for card in cards:
+                if should_deliver_card(card, manual=False):
+                    deliverable_cards.append(card)
+                else:
+                    await self.repository.mark_editorial_rejected(card.material.material_id)
+                    logger.info(
+                        "AI rejected automatic delivery for %s with verdict %s",
+                        card.material.material_id,
+                        card.enrichment.ai_verdict,
+                    )
+            cards = deliverable_cards
             cards, render_failures = await self._renderable_cards(cards)
             counts["editorial_failure_count"] = editorial_failures + render_failures
             if cards and self.settings.dry_run:
@@ -723,6 +756,19 @@ def _select_for_delivery(
     if top_n == 1 and not selected and editorial_retry_slots > 0 and editorial_retries:
         return [editorial_retries[0]]
     return selected
+
+
+def should_deliver_card(card: EditorialCard, *, manual: bool) -> bool:
+    if manual:
+        return True
+    verdict = card.enrichment.ai_verdict
+    if verdict == AIVerdict.SKIP:
+        return False
+    if verdict == AIVerdict.HYPE:
+        return bool(
+            set(card.material.categories) & {Category.CYBERCULTURE, Category.FUNNY, Category.WTF}
+        )
+    return True
 
 
 def _selection_score(

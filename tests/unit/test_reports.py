@@ -69,6 +69,13 @@ async def test_quality_report_summarizes_source_feedback() -> None:
             "average_discovery_score": 37.5,
         }
     ]
+    assert report["delivered"] == 1
+    assert report["useful"] == 1
+    assert report["missed"] == 0
+    assert report["saved"] == 1
+    assert report["useful_rate"] == 1.0
+    assert report["save_rate"] == 1.0
+    assert report["sources_with_most_saves"] == [{"source": "github", "post": 1}]
 
 
 @pytest.mark.asyncio

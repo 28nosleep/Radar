@@ -105,6 +105,7 @@ class MaterialModel(Base):
     editorial_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     editorial_error: Mapped[str | None] = mapped_column(Text)
     editorial_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    editorial_rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivery_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivery_ambiguous_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -197,5 +198,18 @@ class TelegramUpdateModel(Base):
 
     update_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class TranslationCacheModel(Base):
+    __tablename__ = "translation_cache"
+
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_language: Mapped[str] = mapped_column(String(12), nullable=False)
+    target_language: Mapped[str] = mapped_column(String(12), nullable=False)
+    source_text_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    translated_text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

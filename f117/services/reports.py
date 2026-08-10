@@ -15,10 +15,15 @@ async def quality_report(repository: Repository, *, days: int) -> dict[str, Any]
     feedback = await repository.report_feedback(days=days)
     deliveries = await repository.report_deliveries(days=days)
     by_source: dict[str, dict[str, Any]] = {}
+    by_category: dict[str, dict[str, int]] = {}
     material_source: dict[UUID, str] = {}
+    material_categories: dict[UUID, list[str]] = {}
     for material in materials:
         source = material.source.key
         material_source[material.id] = source
+        material_categories[material.id] = [
+            getattr(category, "value", category) for category in getattr(material, "categories", [])
+        ]
         row = by_source.setdefault(source, _quality_row(material.source.name))
         row["collected"] += 1
         row["top"] += int(material.selected_at is not None)
@@ -29,6 +34,8 @@ async def quality_report(repository: Repository, *, days: int) -> dict[str, Any]
         delivery_source = material_source.get(delivery.material_id)
         if delivery_source is not None:
             by_source[delivery_source]["sent"] += 1
+        for category in material_categories.get(delivery.material_id, []):
+            _feedback_metric_row(by_category, category)["delivered"] += 1
 
     for item in feedback:
         row = by_source.setdefault(item.source_key, _quality_row(item.source_key))
@@ -38,6 +45,17 @@ async def quality_report(repository: Repository, *, days: int) -> dict[str, Any]
             row["miss"] += 1
         elif item.feedback_type == FeedbackType.POST.value:
             row["post"] += 1
+        feedback_key = {
+            FeedbackType.USEFUL.value: "useful",
+            FeedbackType.MISS.value: "missed",
+            FeedbackType.POST.value: "saved",
+        }.get(item.feedback_type)
+        if feedback_key is not None:
+            categories = getattr(item, "categories", None) or material_categories.get(
+                getattr(item, "material_id", UUID(int=0)), []
+            )
+            for category in categories:
+                _feedback_metric_row(by_category, str(category))[feedback_key] += 1
 
     sources: list[dict[str, Any]] = []
     for key in sorted(by_source):
@@ -52,7 +70,24 @@ async def quality_report(repository: Repository, *, days: int) -> dict[str, Any]
                 "average_discovery_score": _rounded_mean(discovery),
             }
         )
-    return {"days": days, "materials": len(materials), "sources": sources}
+    delivered = len(deliveries)
+    useful = sum(row["useful"] for row in by_source.values())
+    missed = sum(row["miss"] for row in by_source.values())
+    saved = sum(row["post"] for row in by_source.values())
+    return {
+        "days": days,
+        "materials": len(materials),
+        "delivered": delivered,
+        "useful": useful,
+        "missed": missed,
+        "saved": saved,
+        "useful_rate": _rate(useful, delivered),
+        "save_rate": _rate(saved, delivered),
+        "categories": [{"category": key, **by_category[key]} for key in sorted(by_category)],
+        "sources": sources,
+        "sources_with_most_misses": _top_feedback_sources(sources, "miss"),
+        "sources_with_most_saves": _top_feedback_sources(sources, "post"),
+    }
 
 
 async def discovery_report(
@@ -110,6 +145,22 @@ def _quality_row(name: str) -> dict[str, Any]:
 
 def _rounded_mean(values: list[float]) -> float | None:
     return round(mean(values), 2) if values else None
+
+
+def _feedback_metric_row(rows: dict[str, dict[str, int]], key: str) -> dict[str, int]:
+    return rows.setdefault(key, {"delivered": 0, "useful": 0, "missed": 0, "saved": 0})
+
+
+def _rate(value: int, delivered: int) -> float | None:
+    return round(value / delivered, 4) if delivered else None
+
+
+def _top_feedback_sources(sources: list[dict[str, Any]], metric: str) -> list[dict[str, Any]]:
+    return [
+        {"source": row["source"], metric: row[metric]}
+        for row in sorted(sources, key=lambda item: (item[metric], item["source"]), reverse=True)
+        if row[metric] > 0
+    ][:10]
 
 
 def _distribution(values: list[float]) -> dict[str, float | int | None]:
