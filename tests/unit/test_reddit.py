@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 from f117.adapters.reddit import RedditCollector, RedditOAuthUnauthorized
@@ -49,7 +50,12 @@ async def test_reddit_without_credentials_uses_rss_fallback() -> None:
         reddit_subreddit="robotics",
     )
 
-    collector = RedditCollector(timeout_seconds=1, user_agent="test")
+    collector = RedditCollector(
+        timeout_seconds=1,
+        user_agent="test",
+        rss_spacing_seconds=0,
+        rss_jitter_seconds=0,
+    )
 
     class RSS:
         async def fetch(self, rss_source, **kwargs):  # type: ignore[no-untyped-def]
@@ -90,7 +96,12 @@ async def test_reddit_rss_merges_listing_presence_by_post_id() -> None:
         feed_url="https://www.reddit.com",
         reddit_subreddit="robotics",
     )
-    collector = RedditCollector(timeout_seconds=1, user_agent="test")
+    collector = RedditCollector(
+        timeout_seconds=1,
+        user_agent="test",
+        rss_spacing_seconds=0,
+        rss_jitter_seconds=0,
+    )
     calls: list[str] = []
 
     class RSS:
@@ -126,6 +137,99 @@ async def test_reddit_rss_merges_listing_presence_by_post_id() -> None:
         "reddit_seen_rising",
     ]
     assert [url.rsplit("/", 1)[-1] for url in calls] == ["new.rss", "hot.rss", "rising.rss"]
+
+
+async def test_reddit_rss_429_honors_retry_after_and_records_listing_status(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    source = FeedSource(
+        key="reddit-culture",
+        name="Reddit culture",
+        kind="reddit",
+        feed_url="https://www.reddit.com",
+        reddit_subreddit="Cyberpunk",
+    )
+    collector = RedditCollector(
+        timeout_seconds=1,
+        user_agent="test",
+        rss_spacing_seconds=0,
+        rss_jitter_seconds=0,
+        rss_backoff_base_seconds=0,
+    )
+    calls: list[str] = []
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    class RSS:
+        async def fetch(self, rss_source, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            listing = str(rss_source.feed_url).rsplit("/", 1)[-1].removesuffix(".rss")
+            calls.append(listing)
+            if listing == "new" and calls.count("new") == 1:
+                raise RSSFetchError(
+                    "reddit-culture returned HTTP 429",
+                    status_code=429,
+                    retry_after_seconds=3,
+                )
+            return FeedFetchResult(items=[], etag=None, last_modified=None)
+
+    monkeypatch.setattr("f117.adapters.reddit.asyncio.sleep", fake_sleep)
+    collector.rss = RSS()  # type: ignore[assignment]
+
+    result = await collector.fetch(source)
+
+    assert result.items == []
+    assert calls == ["new", "new", "hot", "rising"]
+    assert sleeps and sleeps[-1] >= 2.9
+    statuses = collector.last_rss_listing_statuses[source.key]
+    assert [
+        (status.listing, status.http_status, status.items_collected, status.retry_count)
+        for status in statuses
+    ] == [
+        ("new", 200, 0, 1),
+        ("hot", 200, 0, 0),
+        ("rising", 200, 0, 0),
+    ]
+
+
+async def test_reddit_rss_requests_are_serialized_across_subreddits() -> None:
+    collector = RedditCollector(
+        timeout_seconds=1,
+        user_agent="test",
+        rss_spacing_seconds=0,
+        rss_jitter_seconds=0,
+    )
+    active = 0
+    peak_active = 0
+
+    class RSS:
+        async def fetch(self, rss_source, **kwargs):  # type: ignore[no-untyped-def]
+            del rss_source, kwargs
+            nonlocal active, peak_active
+            active += 1
+            peak_active = max(peak_active, active)
+            await asyncio.sleep(0)
+            active -= 1
+            return FeedFetchResult(items=[], etag=None, last_modified=None)
+
+    def source(key: str, subreddit: str) -> FeedSource:
+        return FeedSource(
+            key=key,
+            name=key,
+            kind="reddit",
+            feed_url="https://www.reddit.com",
+            reddit_subreddit=subreddit,
+        )
+
+    collector.rss = RSS()  # type: ignore[assignment]
+    await asyncio.gather(
+        collector.fetch(source("reddit-cyberpunk", "Cyberpunk")),
+        collector.fetch(source("reddit-scifi", "scifi")),
+    )
+
+    assert peak_active == 1
 
 
 async def test_reddit_api_401_uses_rss_fallback() -> None:

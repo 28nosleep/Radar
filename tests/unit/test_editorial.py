@@ -483,6 +483,54 @@ def test_github_rapid_growth_still_passes_delivery_gate() -> None:
 
 
 @pytest.mark.parametrize(
+    ("title", "description"),
+    [
+        ("OpenAI releases GPT-5.4, a new frontier model", "The model ships today."),
+        (
+            "OpenAI unveils a major new AI agent capability",
+            "The agent demonstrates a genuinely new capability.",
+        ),
+    ],
+)
+def test_significant_entity_events_remain_high_fit(title: str, description: str) -> None:
+    _, _, result = _assess(
+        title,
+        description=description,
+        source_key="openai-news",
+        categories=[Category.AI, Category.LLM],
+    )
+
+    assert result.eligible, result.reasons
+    assert result.fit >= 90
+    assert any("major recognizable company/product event" in reason for reason in result.reasons)
+
+
+@pytest.mark.parametrize(
+    ("title", "description"),
+    [
+        (
+            "Launching our first OpenAI Certifications courses",
+            "OpenAI's certifications help people build real-world AI skills.",
+        ),
+        (
+            "Defining and evaluating political bias in LLMs",
+            "OpenAI evaluates political bias through real-world testing methods.",
+        ),
+        (
+            "Addendum to o3 and o4-mini system card: Codex",
+            "Codex is powered by OpenAI o3 and runs tests on real-world coding tasks.",
+        ),
+    ],
+)
+def test_non_major_entity_material_is_materially_lower_fit(title: str, description: str) -> None:
+    _, _, result = _assess(title, description=description, source_key="openai-news")
+
+    assert result.fit <= 55
+    assert not result.eligible
+    assert any("non-major corporate/research" in reason for reason in result.reasons)
+
+
+@pytest.mark.parametrize(
     "title",
     [
         "Apple announces a Neuromancer adaptation",

@@ -73,7 +73,28 @@ _PUBLIC_IMPLICATION = re.compile(
     r"brain signals?|after watching|watching human|(?:learns?|learning) "
     r"(?:(?:a )?task|manipulation)|new capability|"
     r"autonomous(?:ly)? discovers?|discover(?:s|ed)? (?:a )?vulnerabilit|"
-    r"real[- ]world|in the wild|humanoid|prosthe(?:tic|sis)|implant|bci)\b",
+    r"in the wild|humanoid|prosthe(?:tic|sis)|implant|bci)\b",
+    re.IGNORECASE,
+)
+_SIGNIFICANT_ENTITY_ACTION = re.compile(
+    r"\b(?:releas(?:e|es|ed|ing)|launch(?:es|ed|ing)?|unveil(?:s|ed)?|"
+    r"announce[sd]?|introduc(?:e|es|ed|ing)|demonstrat(?:e|es|ed|ing)|"
+    r"open[ -]sources?|test(?:s|ing|ed)?)\b",
+    re.IGNORECASE,
+)
+_SIGNIFICANT_ENTITY_SUBJECT = re.compile(
+    r"\b(?:frontier|new|flagship|reasoning|multimodal|open[- ]weight) "
+    r"(?:ai )?(?:model|agent|capabilit(?:y|ies))\b|"
+    r"\b(?:gpt|claude|gemini|llama)[-\s]?\d|"
+    r"\b(?:major (?:product|agent|capability|robot(?:ics)?|safety|security) |"
+    r"humanoid robot|physical ai|open[- ]source model|"
+    r"(?:safety|security) incident|research breakthrough)\b",
+    re.IGNORECASE,
+)
+_NON_MAJOR_ENTITY_MATERIAL = re.compile(
+    r"\b(?:certifications?|courses?|policy|evaluat(?:e|es|ed|ing|ion)|"
+    r"system card|addendum|benchmark(?:ing)?|methodology|documentation|"
+    r"corporate programme|corporate program|minor update)\b",
     re.IGNORECASE,
 )
 _CULTURAL_EVENT = re.compile(
@@ -257,13 +278,14 @@ def assess_editorial_fit(
         if reddit_semantics is not None
         else bool(_MAJOR_EVENT.search(text))
     )
+    significant_entity_event = major_entity and _is_significant_entity_event(text)
     public_implication = bool(_PUBLIC_IMPLICATION.search(text))
     cultural_event = _is_cultural_standalone_event(text)
     culture_noise = bool(_CULTURE_NOISE.search(text))
     meme_gate = _passes_meme_gate(stored, ranked, text)
     unusual = bool(_UNUSUAL.search(text))
 
-    if major_entity and major_event:
+    if significant_entity_event:
         fit += 22
         reasons.append("major recognizable company/product event")
     elif major_entity:
@@ -278,6 +300,9 @@ def assess_editorial_fit(
     if major_entity and _FRONTIER_EVENT.search(text):
         fit += 18
         reasons.append("major frontier-model signal")
+    if major_entity and _NON_MAJOR_ENTITY_MATERIAL.search(text):
+        fit -= 18
+        reasons.append("penalty: non-major corporate/research material")
     if cultural_event and Category.CYBERCULTURE in categories:
         fit += 18
         reasons.append("cyberculture significance")
@@ -478,6 +503,16 @@ def _has_major_entity(text: str) -> bool:
     """Match Figure only when it denotes the robotics company, not the common noun."""
 
     return bool(_MAJOR_ENTITY.search(text) or _FIGURE_AI_ENTITY.search(text))
+
+
+def _is_significant_entity_event(text: str) -> bool:
+    """Require both a consequential subject and an event action for the +22 signal."""
+
+    return bool(
+        _SIGNIFICANT_ENTITY_ACTION.search(text)
+        and _SIGNIFICANT_ENTITY_SUBJECT.search(text)
+        and not _NON_MAJOR_ENTITY_MATERIAL.search(text)
+    )
 
 
 def _reddit_primary_claim(title: str, description: str) -> str:

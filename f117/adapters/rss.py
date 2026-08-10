@@ -6,6 +6,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from html import unescape
 from time import struct_time
 from typing import Any
@@ -18,7 +19,16 @@ from f117.domain import CollectedItem, FeedSource
 
 
 class RSSFetchError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.retry_after_seconds = retry_after_seconds
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +104,11 @@ class RSSCollector:
                     not_modified=True,
                 )
             if response.status != 200:
-                raise RSSFetchError(f"{source.key} returned HTTP {response.status}")
+                raise RSSFetchError(
+                    f"{source.key} returned HTTP {response.status}",
+                    status_code=response.status,
+                    retry_after_seconds=_retry_after_seconds(response.headers.get("Retry-After")),
+                )
             content_length = response.content_length
             if content_length is not None and content_length > self.max_response_bytes:
                 raise RSSFetchError(f"{source.key} response is too large: {content_length} bytes")
@@ -172,6 +186,25 @@ class RSSCollector:
             media_source=media_source,
             raw=raw,
         )
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    """Return a safe delta for either standard Retry-After representation."""
+
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
+    else:
+        return seconds if seconds >= 0 else None
 
 
 def _entry_datetime(entry: Any) -> datetime | None:

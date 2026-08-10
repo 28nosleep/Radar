@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from time import monotonic
 from typing import Any, Literal
 
 import aiohttp
@@ -20,6 +23,15 @@ class RedditOAuthUnauthorized(RedditFetchError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class RedditRSSListingStatus:
+    listing: Literal["new", "hot", "rising"]
+    http_status: int | None
+    items_collected: int
+    retry_count: int
+    error: str | None = None
+
+
 class RedditCollector:
     def __init__(
         self,
@@ -28,6 +40,10 @@ class RedditCollector:
         user_agent: str,
         client_id: str = "",
         client_secret: str = "",
+        rss_spacing_seconds: float = 0.35,
+        rss_jitter_seconds: float = 0.10,
+        rss_max_retries: int = 1,
+        rss_backoff_base_seconds: float = 2.0,
     ) -> None:
         self.timeout = aiohttp.ClientTimeout(total=timeout_seconds)
         self.headers = {"User-Agent": user_agent, "Accept": "application/json"}
@@ -35,6 +51,13 @@ class RedditCollector:
         self.client_secret = client_secret
         self.access_token = ""
         self.token_lock = asyncio.Lock()
+        self.rss_request_lock = asyncio.Lock()
+        self.next_rss_request_at = 0.0
+        self.rss_spacing_seconds = rss_spacing_seconds
+        self.rss_jitter_seconds = rss_jitter_seconds
+        self.rss_max_retries = rss_max_retries
+        self.rss_backoff_base_seconds = rss_backoff_base_seconds
+        self.last_rss_listing_statuses: dict[str, tuple[RedditRSSListingStatus, ...]] = {}
         self.logger = logging.getLogger(__name__)
         self.rss = RSSCollector(
             timeout_seconds=timeout_seconds,
@@ -128,6 +151,7 @@ class RedditCollector:
         etag: str | None = None
         last_modified: str | None = None
         partial = False
+        listing_statuses: list[RedditRSSListingStatus] = []
 
         for listing in listings:
             rss_source = source.model_copy(
@@ -135,19 +159,20 @@ class RedditCollector:
                     "feed_url": f"https://www.reddit.com/r/{source.reddit_subreddit}/{listing}.rss"
                 }
             )
-            try:
-                result = await self.rss.fetch(rss_source, session=session)
-            except RSSFetchError as exc:
+            result, status = await self._fetch_rss_listing(rss_source, listing, session=session)
+            listing_statuses.append(status)
+            if result is None:
                 # ``new`` is the durable baseline.  Optional listing feeds are
                 # allowed to fail independently because Reddit does not promise
                 # the same availability for every Atom view.
                 level = logging.WARNING if listing == "new" else logging.INFO
                 self.logger.log(
                     level,
-                    "Reddit RSS %s listing skipped for %s: %s",
+                    "Reddit RSS %s listing skipped for %s after %s retry(s): %s",
                     listing,
                     source.key,
-                    exc,
+                    status.retry_count,
+                    status.error,
                 )
                 continue
 
@@ -170,12 +195,74 @@ class RedditCollector:
                         "qualitative_signals": sorted(signals),
                     }
                 )
+        self.last_rss_listing_statuses[source.key] = tuple(listing_statuses)
         return FeedFetchResult(
             items=list(merged.values()),
             etag=etag,
             last_modified=last_modified,
             partial=partial,
         )
+
+    async def _fetch_rss_listing(
+        self,
+        source: FeedSource,
+        listing: Literal["new", "hot", "rising"],
+        *,
+        session: aiohttp.ClientSession | None,
+    ) -> tuple[FeedFetchResult | None, RedditRSSListingStatus]:
+        """Serialize public Reddit RSS requests and back off globally on throttling."""
+
+        for retry_count in range(self.rss_max_retries + 1):
+            try:
+                result = await self._paced_rss_fetch(source, session=session)
+            except RSSFetchError as exc:
+                status_code = exc.status_code
+                if status_code != 429 or retry_count >= self.rss_max_retries:
+                    return None, RedditRSSListingStatus(
+                        listing=listing,
+                        http_status=status_code,
+                        items_collected=0,
+                        retry_count=retry_count,
+                        error=str(exc),
+                    )
+                delay = exc.retry_after_seconds
+                if delay is None:
+                    delay = self.rss_backoff_base_seconds * (2**retry_count)
+                await self._extend_rss_cooldown(delay)
+                self.logger.info(
+                    "Reddit RSS %s listing throttled for %s; retrying in %.1fs",
+                    listing,
+                    source.key,
+                    delay,
+                )
+                continue
+            return result, RedditRSSListingStatus(
+                listing=listing,
+                http_status=304 if result.not_modified else 200,
+                items_collected=len(result.items),
+                retry_count=retry_count,
+            )
+        raise AssertionError("bounded Reddit RSS retry loop exhausted unexpectedly")
+
+    async def _paced_rss_fetch(
+        self, source: FeedSource, *, session: aiohttp.ClientSession | None
+    ) -> FeedFetchResult:
+        async with self.rss_request_lock:
+            delay = self.next_rss_request_at - monotonic()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            try:
+                return await self.rss.fetch(source, session=session)
+            finally:
+                self.next_rss_request_at = (
+                    monotonic()
+                    + self.rss_spacing_seconds
+                    + random.uniform(0.0, self.rss_jitter_seconds)
+                )
+
+    async def _extend_rss_cooldown(self, delay: float) -> None:
+        async with self.rss_request_lock:
+            self.next_rss_request_at = max(self.next_rss_request_at, monotonic() + delay)
 
     @staticmethod
     def _post_to_item(
