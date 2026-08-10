@@ -77,9 +77,32 @@ _PUBLIC_IMPLICATION = re.compile(
     re.IGNORECASE,
 )
 _CULTURAL_EVENT = re.compile(
-    r"\b(neuromancer|cyberpunk|transhuman(?:ism|ist)?|dystopi(?:a|an)|"
-    r"adaptation|first trailer|science fiction|sci[- ]fi|internet culture|"
-    r"digital subculture|tech meme|ai meme)\b",
+    r"\b(?:announc(?:e|es|ed|ing|ement)|releas(?:e|es|ed|ing)|debut(?:s|ed)?|"
+    r"first trailer|teaser|enter(?:s|ed|ing)? production|greenlit|"
+    r"casting|cast(?:s|ed)?|adaptation|viral (?:cultural )?phenomenon|went viral|"
+    r"major (?:project|event|incident|launch))\b",
+    re.IGNORECASE,
+)
+_CULTURAL_SUBJECT = re.compile(
+    r"\b(?:neuromancer|blade[ -]runner|alien(?:\s+(?:franchise|series|film|universe))?|"
+    r"cyberpunk|transhuman(?:ism|ist)?|dystopi(?:a|an)|science fiction|sci[- ]fi|"
+    r"internet culture|digital subculture|hacker culture|digital identity|"
+    r"synthetic media|deepfakes?|virtual worlds?|surveillance|privacy|"
+    r"ai[- ]generated (?:culture|media|music|film|video|art)|"
+    r"(?:ai|robot(?:ics)?) (?:film|movie|series|show|game|adaptation|memes?))\b",
+    re.IGNORECASE,
+)
+_CULTURE_NOISE = re.compile(
+    r"\b(?:fan art|cosplay|merch(?:andise)?|figurines?|tattoo|collection(?: photo)?|"
+    r"screenshots?|lore question|recommend(?: me|ation)?|favorite alien movie|"
+    r"movie review|review\b|celebrity gossip|fortnite skin|battlefield|"
+    r"(?:game|gaming) (?:patch|dlc)|generic meme)\b",
+    re.IGNORECASE,
+)
+_MEME = re.compile(r"\bmemes?\b", re.IGNORECASE)
+_VIRAL_SIGNIFICANCE = re.compile(
+    r"\b(?:went viral|viral phenomenon|cross[- ]source|widely shared|"
+    r"major internet (?:moment|phenomenon))\b",
     re.IGNORECASE,
 )
 _UNUSUAL = re.compile(
@@ -127,7 +150,8 @@ _REDDIT_RSS_EVENT = re.compile(
     r"unveil(?:s|ed)?|demonstrat(?:e|es|ed|ing)|trained entirely on|"
     r"designed|settles?|solved|open[ -]sources|publish(?:es|ed)|"
     r"introduc(?:e|es|ed|ing)|achiev(?:e|es|ed)|begins? using|will use|"
-    r"went live|breaks? out|escapes?)\b",
+    r"went live|breaks? out|escapes?|enters? production|greenlit|"
+    r"first trailer|teaser|casting|cast(?:s|ed)?)\b",
     re.IGNORECASE,
 )
 _REDDIT_RESEARCH_RESULT = re.compile(
@@ -200,7 +224,11 @@ def assess_editorial_fit(
     source_key = stored.item.source_key.casefold()
     is_reddit_rss = source_key.startswith("reddit-") and _is_reddit_rss(stored)
     reddit_semantics = (
-        _classify_reddit_rss_semantics(stored.item.title, stored.item.description)
+        _classify_reddit_rss_semantics(
+            stored.item.title,
+            stored.item.description,
+            subreddit=stored.item.subreddit,
+        )
         if is_reddit_rss
         else None
     )
@@ -230,7 +258,9 @@ def assess_editorial_fit(
         else bool(_MAJOR_EVENT.search(text))
     )
     public_implication = bool(_PUBLIC_IMPLICATION.search(text))
-    cultural_event = bool(_CULTURAL_EVENT.search(text))
+    cultural_event = _is_cultural_standalone_event(text)
+    culture_noise = bool(_CULTURE_NOISE.search(text))
+    meme_gate = _passes_meme_gate(stored, ranked, text)
     unusual = bool(_UNUSUAL.search(text))
 
     if major_entity and major_event:
@@ -251,6 +281,12 @@ def assess_editorial_fit(
     if cultural_event and Category.CYBERCULTURE in categories:
         fit += 18
         reasons.append("cyberculture significance")
+    if culture_noise:
+        fit -= 70
+        reasons.append("penalty: fandom/entertainment filler")
+    if not meme_gate:
+        fit -= 70
+        reasons.append("penalty: generic meme without a strong cultural signal")
     if unusual:
         fit += 13
         reasons.append("unusual/viral/WTF appeal")
@@ -393,6 +429,8 @@ def assess_editorial_fit(
         and arxiv_gate
         and youtube_gate
         and reddit_gate
+        and not culture_noise
+        and meme_gate
         and (not source_key.startswith("arxiv") or fit >= config.arxiv_min_fit)
     )
     urgent_source_gate = (
@@ -453,17 +491,27 @@ def _reddit_primary_claim(title: str, description: str) -> str:
     return f"{title.strip()}\n{opening}".strip()
 
 
-def _classify_reddit_rss_semantics(title: str, description: str) -> _RedditRSSSemantics:
+def _classify_reddit_rss_semantics(
+    title: str,
+    description: str,
+    *,
+    subreddit: str | None = None,
+) -> _RedditRSSSemantics:
     """Classify the post's main claim instead of counting words in its whole body."""
 
     title_claim = title.strip()
     primary_claim = _reddit_primary_claim(title, description)
+    is_fandom_sensor = (subreddit or "").casefold() in {"lv426", "bladerunner"}
+    if is_fandom_sensor and _CULTURE_NOISE.search(primary_claim):
+        return _RedditRSSSemantics(False, False, rejection="fandom noise")
+
     title_event = bool(
         _REDDIT_RSS_EVENT.search(title_claim)
         or _REDDIT_RESEARCH_RESULT.search(title_claim)
         or _REDDIT_IMPLEMENTED_DEMO.search(title_claim)
         or _REDDIT_ACTIVITY_EVENT.search(title_claim)
         or _is_reddit_flair_research_result(title_claim)
+        or _is_cultural_standalone_event(title_claim)
     )
     primary_event = bool(
         title_event
@@ -471,6 +519,7 @@ def _classify_reddit_rss_semantics(title: str, description: str) -> _RedditRSSSe
         or _REDDIT_RESEARCH_RESULT.search(primary_claim)
         or _REDDIT_IMPLEMENTED_DEMO.search(primary_claim)
         or _REDDIT_ACTIVITY_EVENT.search(primary_claim)
+        or _is_cultural_standalone_event(primary_claim)
     )
 
     # A benchmark can be a research result, but a price/speed/model comparison
@@ -529,9 +578,37 @@ def _reddit_event_kind(claim: str) -> str:
         return "confirmed research result"
     if _REDDIT_IMPLEMENTED_DEMO.search(claim):
         return "confirmed build/demo"
+    if _is_cultural_standalone_event(claim):
+        return "confirmed cultural event"
     if re.search(r"\b(?:breaks? out|escapes?)\b", claim, re.IGNORECASE):
         return "confirmed incident"
     return "confirmed release/event"
+
+
+def _is_cultural_standalone_event(text: str) -> bool:
+    major_cultural_moment = re.search(
+        r"\b(?:viral|major)\b.{0,60}\b(?:cultural )?(?:event|phenomenon)\b",
+        text,
+        re.IGNORECASE,
+    )
+    return bool(
+        _CULTURAL_SUBJECT.search(text) and (_CULTURAL_EVENT.search(text) or major_cultural_moment)
+    )
+
+
+def _passes_meme_gate(stored: StoredMaterial, ranked: RankedMaterial, text: str) -> bool:
+    """Require a concrete cultural signal before a meme can become a delivery card."""
+
+    if not _MEME.search(text):
+        return True
+    signals = set(stored.item.qualitative_signals)
+    listed_hot_or_rising = bool({"reddit_seen_hot", "reddit_seen_rising"} & signals)
+    return bool(
+        _VIRAL_SIGNIFICANCE.search(text)
+        or stored.independent_mentions >= 2
+        or ranked.rising
+        or listed_hot_or_rising
+    )
 
 
 def _assess_reddit_rss_gate(

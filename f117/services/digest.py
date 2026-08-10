@@ -24,7 +24,7 @@ from f117.domain import Category, EditorialCard, RankedMaterial, StoredMaterial
 from f117.pipeline.classifier import classify_item
 from f117.pipeline.deduplicator import duplicate_reason, find_duplicate
 from f117.pipeline.discovery import DiscoveryConfig, assess_discovery
-from f117.pipeline.diversity import DiversityConfig, diversify
+from f117.pipeline.diversity import DiversityConfig, diversify, soft_balance_cyberculture
 from f117.pipeline.editorial import EditorialConfig, assess_editorial_fit
 from f117.pipeline.normalizer import normalize_item
 from f117.pipeline.ranking import RankingConfig, score_material
@@ -703,6 +703,7 @@ def _select_for_delivery(
     )
     if diversity_config is not None:
         fresh = diversify(fresh, config=diversity_config)
+        fresh = soft_balance_cyberculture(fresh, top_n=top_n, config=diversity_config)
 
     # Reserve a fresh slot against both retry queues together. Cached delivery
     # retries remain first in FIFO order, while editorial retries consume only

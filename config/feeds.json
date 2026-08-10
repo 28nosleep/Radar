@@ -48,6 +48,46 @@
     "default_categories": []
   },
   {
+    "key": "the-verge-culture",
+    "name": "The Verge: Entertainment & Culture",
+    "feed_url": "https://www.theverge.com/rss/index.xml",
+    "site_url": "https://www.theverge.com/entertainment/",
+    "item_limit": 30,
+    "reputation": 0.8,
+    "enabled": true,
+    "default_categories": []
+  },
+  {
+    "key": "404-media",
+    "name": "404 Media",
+    "feed_url": "https://www.404media.co/rss/",
+    "site_url": "https://www.404media.co/",
+    "item_limit": 30,
+    "reputation": 0.8,
+    "enabled": true,
+    "default_categories": []
+  },
+  {
+    "key": "polygon",
+    "name": "Polygon",
+    "feed_url": "https://www.polygon.com/rss/index.xml",
+    "site_url": "https://www.polygon.com/",
+    "item_limit": 30,
+    "reputation": 0.75,
+    "enabled": true,
+    "default_categories": []
+  },
+  {
+    "key": "futurism",
+    "name": "Futurism",
+    "feed_url": "https://futurism.com/feed",
+    "site_url": "https://futurism.com/",
+    "item_limit": 30,
+    "reputation": 0.7,
+    "enabled": true,
+    "default_categories": []
+  },
+  {
     "key": "arxiv-ai",
     "name": "arXiv: AI and Robotics",
     "kind": "arxiv",
@@ -92,6 +132,21 @@
   },
   {
     "key": "reddit-transhumanism", "name": "Reddit: r/transhumanism", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "transhumanism", "reddit_listing": "hot", "item_limit": 20, "reputation": 0.55, "enabled": true, "default_categories": ["brain_interface"]
+  },
+  {
+    "key": "reddit-cyberpunk", "name": "Reddit: r/Cyberpunk", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "Cyberpunk", "reddit_listing": "hot", "item_limit": 20, "reputation": 0.55, "enabled": true, "default_categories": []
+  },
+  {
+    "key": "reddit-scifi", "name": "Reddit: r/scifi", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "scifi", "reddit_listing": "hot", "item_limit": 20, "reputation": 0.5, "enabled": true, "default_categories": []
+  },
+  {
+    "key": "reddit-internet-is-beautiful", "name": "Reddit: r/InternetIsBeautiful", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "InternetIsBeautiful", "reddit_listing": "hot", "item_limit": 20, "reputation": 0.5, "enabled": true, "default_categories": []
+  },
+  {
+    "key": "reddit-lv426", "name": "Reddit: r/LV426", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "LV426", "reddit_listing": "hot", "item_limit": 15, "reputation": 0.45, "enabled": true, "default_categories": []
+  },
+  {
+    "key": "reddit-bladerunner", "name": "Reddit: r/bladerunner", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "bladerunner", "reddit_listing": "hot", "item_limit": 15, "reputation": 0.45, "enabled": true, "default_categories": []
   },
   {
     "key": "reddit-bci", "name": "Reddit: r/BCI", "kind": "reddit", "feed_url": "https://www.reddit.com", "reddit_subreddit": "BCI", "reddit_listing": "hot", "item_limit": 20, "reputation": 0.65, "enabled": true, "default_categories": ["brain_interface"]

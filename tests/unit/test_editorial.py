@@ -26,6 +26,7 @@ def _assess(
     qualitative_signals: list[str] | None = None,
     mentions: int = 1,
     published_at: datetime = NOW,
+    subreddit: str | None = None,
 ):
     inferred = classify_text(title, description) if categories is None else categories
     item = NormalizedItem(
@@ -43,6 +44,7 @@ def _assess(
         categories=inferred,
         popularity=popularity or {},
         qualitative_signals=qualitative_signals or [],
+        subreddit=subreddit,
         content_hash=uuid4().hex,
         normalized_title=title.casefold(),
     )
@@ -478,3 +480,99 @@ def test_github_rapid_growth_still_passes_delivery_gate() -> None:
     )
 
     assert result.eligible, result.reasons
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Apple announces a Neuromancer adaptation",
+        "First major Neuromancer trailer debuts",
+        "Studio announces a major Alien franchise series",
+        "Blade Runner project enters production",
+        "Major cyberpunk game announcement reveals a new future city",
+        "AI-generated film becomes a viral cultural phenomenon",
+        "Neuralink announces a transhumanism-focused BCI project",
+        "Major hacker culture event exposes a new surveillance system",
+        "Viral AI-generated video becomes a major internet culture phenomenon",
+    ],
+)
+def test_cyberculture_acceptance_fixtures_pass(title: str) -> None:
+    _, _, result = _assess(title, source_key="the-verge-culture")
+
+    assert result.eligible, result.reasons
+    assert any("cyberculture significance" in reason for reason in result.reasons)
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Fortnite skin uses a cyberpunk theme",
+        "Generic Battlefield news round-up",
+        "Celebrity gossip around a Netflix release",
+        "Movie review: a new cyberpunk thriller",
+        "Alien fan art collection photo",
+        "Blade Runner cosplay and tattoo collection",
+        "Recommend me sci-fi",
+        "What's your favorite Alien movie?",
+        "Cyberpunk lore question",
+        "A generic AI meme",
+        "Cyberpunk game patch DLC notes",
+    ],
+)
+def test_cyberculture_noise_fixtures_are_rejected(title: str) -> None:
+    _, _, result = _assess(title, source_key="polygon")
+
+    assert not result.eligible, result.reasons
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Apple releases the first trailer for Neuromancer",
+        "New Alien franchise series announced",
+        "Blade Runner project enters production",
+    ],
+)
+def test_reddit_rss_cultural_events_pass_as_standalone_events(title: str) -> None:
+    _, _, result = _assess(
+        title,
+        source_key="reddit-lv426",
+        qualitative_signals=["reddit_rss", "reddit_seen_new", "reddit_seen_hot"],
+        subreddit="LV426",
+    )
+
+    assert result.eligible, result.reasons
+    assert any("confirmed cultural event" in reason for reason in result.reasons)
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Alien fan art",
+        "New Blade Runner collectible figurine",
+        "What's your favorite Alien movie?",
+        "Blade Runner lore question",
+    ],
+)
+def test_reddit_fandom_sensors_reject_non_events(title: str) -> None:
+    _, _, result = _assess(
+        title,
+        source_key="reddit-lv426",
+        qualitative_signals=["reddit_rss", "reddit_seen_new", "reddit_seen_hot"],
+        subreddit="LV426",
+    )
+
+    assert not result.eligible
+    assert any("fandom" in reason or "discussion" in reason for reason in result.reasons)
+
+
+def test_generic_meme_needs_a_strong_cultural_signal() -> None:
+    _, _, generic = _assess("A generic AI meme", source_key="reddit-cyberpunk")
+    _, _, viral = _assess(
+        "AI meme becomes a viral cultural phenomenon",
+        source_key="reddit-cyberpunk",
+        qualitative_signals=["reddit_rss", "reddit_seen_hot"],
+    )
+
+    assert not generic.eligible
+    assert viral.eligible, viral.reasons

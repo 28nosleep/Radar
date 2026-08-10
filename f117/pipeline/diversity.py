@@ -35,6 +35,8 @@ class DiversityConfig:
     discovery_selection_boost: float = 0.0
     other_discovery_boost_factor: float = 0.20
     editorial_fit_weight: float = 0.0
+    culture_target_share: float = 0.50
+    culture_close_score_gap: float = 8.0
 
 
 def diversify(
@@ -80,6 +82,61 @@ def diversify(
     # this sequence, so a strong deferred candidate cannot be inverted by a
     # later weaker overflow item.
     return accepted + deferred
+
+
+def soft_balance_cyberculture(
+    materials: Sequence[RankedMaterial],
+    *,
+    top_n: int,
+    config: DiversityConfig,
+) -> list[RankedMaterial]:
+    """Prefer comparable cyberculture cards without turning balance into a quota.
+
+    The function only swaps in a culture candidate when it is close to the
+    weakest currently selected non-culture candidate.  It never evicts a clear
+    quality winner, and it never limits an already culture-heavy digest.
+    """
+
+    if top_n <= 1 or not materials:
+        return list(materials)
+    selected = list(materials[:top_n])
+    remaining = list(materials[top_n:])
+    target = round(top_n * config.culture_target_share)
+
+    while _culture_count(selected) < target:
+        culture_candidate = next(
+            (material for material in remaining if _is_cyberculture(material)), None
+        )
+        replaceable = [material for material in selected if not _is_cyberculture(material)]
+        if culture_candidate is None or not replaceable:
+            break
+        weakest = min(replaceable, key=lambda material: _selection_score(material, config))
+        if _selection_score(culture_candidate, config) < (
+            _selection_score(weakest, config) - config.culture_close_score_gap
+        ):
+            break
+        selected.remove(weakest)
+        remaining.remove(culture_candidate)
+        remaining.append(weakest)
+        selected.append(culture_candidate)
+
+    positions = {material.material_id: index for index, material in enumerate(materials)}
+    return sorted(
+        [*selected, *remaining],
+        key=lambda material: (
+            0 if material in selected else 1,
+            -_selection_score(material, config),
+            positions[material.material_id],
+        ),
+    )
+
+
+def _is_cyberculture(material: RankedMaterial) -> bool:
+    return Category.CYBERCULTURE in material.categories
+
+
+def _culture_count(materials: Sequence[RankedMaterial]) -> int:
+    return sum(_is_cyberculture(material) for material in materials)
 
 
 def _selection_score(material: RankedMaterial, config: DiversityConfig) -> float:

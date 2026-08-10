@@ -79,6 +79,13 @@ def test_group_cards_uses_required_editorial_sections() -> None:
     ]
 
 
+def test_cyberculture_uses_its_own_clean_editorial_section_and_tag() -> None:
+    rendered = render_card(_card(Category.CYBERCULTURE, title="Neuromancer"))
+
+    assert rendered.startswith("🌐 Киберкультура\n\n")
+    assert "#Cyberculture #Technology" in rendered
+
+
 def test_editorial_card_is_human_readable_and_hides_debug_metrics() -> None:
     rendered = render_card(_card(Category.RESEARCH))
 

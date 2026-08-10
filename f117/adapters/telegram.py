@@ -366,6 +366,7 @@ def group_cards(cards: Sequence[EditorialCard]) -> dict[str, list[EditorialCard]
         "🤖 Роботы",
         "📄 Исследования",
         "🚀 Open Source",
+        "🌐 Киберкультура",
         "😂 Смешное и WTF",
     ]
     return {section: grouped[section] for section in order if grouped[section]}
@@ -424,6 +425,8 @@ def render_digest(cards: Sequence[EditorialCard]) -> str:
 def _section_for(card: EditorialCard) -> str:
     categories = set(card.material.categories)
     popularity = sum(card.material.popularity.values())
+    if Category.CYBERCULTURE in categories:
+        return "🌐 Киберкультура"
     if Category.FUNNY in categories or Category.WTF in categories:
         return "😂 Смешное и WTF"
     if Category.ROBOTICS in categories:
@@ -466,6 +469,7 @@ _CATEGORY_HASHTAGS: dict[Category, str] = {
     Category.OPEN_SOURCE: "#OpenSource",
     Category.HARDWARE: "#Hardware",
     Category.BRAIN_INTERFACE: "#BrainComputerInterface",
+    Category.CYBERCULTURE: "#Cyberculture",
     Category.FUNNY: "#Funny",
     Category.WTF: "#WTF",
     Category.OTHER: "#Technology",
