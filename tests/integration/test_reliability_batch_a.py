@@ -25,6 +25,7 @@ from f117.adapters.rss import FeedFetchResult
 from f117.adapters.telegram import DeliveryCallback, DeliveryReceipt, TelegramError
 from f117.config import Settings
 from f117.domain import (
+    AIVerdict,
     Category,
     CollectedItem,
     EditorialCard,
@@ -177,6 +178,7 @@ class _Enricher:
                 enrichment=EditorialEnrichment(
                     title_ru=material.title,
                     summary_ru="Короткое резюме.",
+                    ai_verdict=AIVerdict.INTERESTING,
                     post_fit_score=8,
                 ),
                 llm_model="test-model",

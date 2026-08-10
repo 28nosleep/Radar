@@ -21,7 +21,7 @@ from f117.adapters.telegram import (
     render_digest,
 )
 from f117.config import Settings
-from f117.domain import AIVerdict, Category, EditorialCard, RankedMaterial, StoredMaterial
+from f117.domain import Category, EditorialCard, RankedMaterial, StoredMaterial
 from f117.pipeline.classifier import classify_item
 from f117.pipeline.deduplicator import duplicate_reason, find_duplicate
 from f117.pipeline.discovery import DiscoveryConfig, assess_discovery
@@ -29,6 +29,7 @@ from f117.pipeline.diversity import DiversityConfig, diversify, soft_balance_cyb
 from f117.pipeline.editorial import EditorialConfig, assess_editorial_fit
 from f117.pipeline.normalizer import normalize_item
 from f117.pipeline.ranking import RankingConfig, score_material
+from f117.services.delivery_policy import is_ai_verdict_visible
 from f117.services.manual_intake import ManualIntakeResult, ManualIntakeService
 from f117.storage.repository import Repository, SourceState
 
@@ -759,16 +760,7 @@ def _select_for_delivery(
 
 
 def should_deliver_card(card: EditorialCard, *, manual: bool) -> bool:
-    if manual:
-        return True
-    verdict = card.enrichment.ai_verdict
-    if verdict == AIVerdict.SKIP:
-        return False
-    if verdict == AIVerdict.HYPE:
-        return bool(
-            set(card.material.categories) & {Category.CYBERCULTURE, Category.FUNNY, Category.WTF}
-        )
-    return True
+    return is_ai_verdict_visible(card.enrichment.ai_verdict, manual=manual)
 
 
 def _selection_score(

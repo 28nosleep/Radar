@@ -13,6 +13,7 @@ from f117.adapters.rss import FeedFetchResult
 from f117.adapters.telegram import DeliveryCallback, DeliveryReceipt
 from f117.config import Settings
 from f117.domain import (
+    AIVerdict,
     Category,
     CollectedItem,
     EditorialCard,
@@ -35,6 +36,7 @@ class _MemoryRepository:
         self.saved_enrichments = 0
         self.source_results: list[dict[str, object]] = []
         self.selected_ids: list[UUID] = []
+        self.editorial_rejected_ids: list[UUID] = []
 
     @asynccontextmanager
     async def run_lock(self):  # type: ignore[no-untyped-def]
@@ -195,6 +197,9 @@ class _MemoryRepository:
     async def record_editorial_failure(self, *_: object, **__: object) -> None:
         return None
 
+    async def mark_editorial_rejected(self, material_id: UUID) -> None:
+        self.editorial_rejected_ids.append(material_id)
+
     async def finish_digest_run(self, run_id: UUID, **values: object) -> None:
         self.runs[run_id].update(values)
 
@@ -215,8 +220,9 @@ class _Collector:
 
 
 class _CountingEnricher:
-    def __init__(self) -> None:
+    def __init__(self, verdict: AIVerdict = AIVerdict.INTERESTING) -> None:
         self.calls: list[list[UUID]] = []
+        self.verdict = verdict
 
     async def enrich(self, materials: Sequence[RankedMaterial]) -> list[EditorialCard]:
         self.calls.append([material.material_id for material in materials])
@@ -226,6 +232,7 @@ class _CountingEnricher:
                 enrichment=EditorialEnrichment(
                     title_ru=f"RU: {material.title}",
                     summary_ru="summary",
+                    ai_verdict=self.verdict,
                     post_fit_score=8,
                 ),
                 llm_model="test-model",
@@ -479,6 +486,42 @@ async def test_real_run_records_telegram_delivery(tmp_path: Path) -> None:
 
     assert summary.delivered_count == 1
     assert len(repository.recorded_deliveries) == 1
+
+
+@pytest.mark.asyncio
+async def test_automatic_digest_may_be_empty_when_only_weak_card_is_selected(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path, dry_run=False)
+    repository = _MemoryRepository()
+    notifier = _Notifier()
+    service = DigestService(
+        settings=settings,
+        repository=repository,  # type: ignore[arg-type]
+        collector=_Collector(
+            {
+                "source-a": [
+                    _item(
+                        "source-a",
+                        "a-weak",
+                        "A significant new AI system",
+                        "https://example.com/weak",
+                        reputation=0.9,
+                    )
+                ],
+                "source-b": [],
+            }
+        ),  # type: ignore[arg-type]
+        enricher=_CountingEnricher(AIVerdict.WEAK),
+        notifier=notifier,
+    )
+
+    summary = await service.run_once()
+
+    assert summary.selected_count == 1
+    assert summary.delivered_count == 0
+    assert notifier.calls == []
+    assert len(repository.editorial_rejected_ids) == 1
 
 
 @pytest.mark.asyncio

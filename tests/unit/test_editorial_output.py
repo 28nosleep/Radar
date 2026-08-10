@@ -32,33 +32,45 @@ def test_ai_verdict_schema_has_no_legacy_commentary_fields() -> None:
     assert "ironic_comment" not in schema
 
 
-def test_skip_is_not_automatic_but_is_still_shown_for_manual_submission() -> None:
+@pytest.mark.parametrize("verdict", list(AIVerdict))
+def test_manual_submission_is_shown_for_every_ai_verdict(verdict: AIVerdict) -> None:
     card = _card(Category.AI).model_copy(
         update={
             "enrichment": EditorialEnrichment(
                 title_ru="Заголовок",
                 summary_ru="Описание",
                 ai_opinion=_valid_opinion(),
-                ai_verdict=AIVerdict.SKIP,
+                ai_verdict=verdict,
                 post_fit_score=1,
             )
         }
     )
 
-    assert should_deliver_card(card, manual=False) is False
     assert should_deliver_card(card, manual=True) is True
 
 
-def test_hype_is_automatic_only_when_the_hype_itself_is_culturally_relevant() -> None:
+@pytest.mark.parametrize(
+    ("verdict", "expected"),
+    [
+        (AIVerdict.STRONG, True),
+        (AIVerdict.INTERESTING, True),
+        (AIVerdict.WEAK, False),
+        (AIVerdict.HYPE, False),
+        (AIVerdict.SKIP, False),
+    ],
+)
+def test_automatic_delivery_uses_strict_ai_verdict_policy(
+    verdict: AIVerdict, expected: bool
+) -> None:
     enrichment = EditorialEnrichment(
         title_ru="Заголовок",
         summary_ru="Описание",
         ai_opinion=_valid_opinion(),
-        ai_verdict=AIVerdict.HYPE,
+        ai_verdict=verdict,
         post_fit_score=3,
     )
     tech = _card(Category.AI).model_copy(update={"enrichment": enrichment})
     culture = _card(Category.CYBERCULTURE).model_copy(update={"enrichment": enrichment})
 
-    assert should_deliver_card(tech, manual=False) is False
-    assert should_deliver_card(culture, manual=False) is True
+    assert should_deliver_card(tech, manual=False) is expected
+    assert should_deliver_card(culture, manual=False) is expected
