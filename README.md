@@ -3,7 +3,7 @@
 A personal intelligence feed for one owner. The current M4 milestone is a fully
 working vertical slice:
 
-`RSS / Hacker News / arXiv / GitHub / Reddit / YouTube → normalization → classification → deduplication → rule-based TOP-10 → OpenAI → personal Telegram`
+`RSS / Hacker News / arXiv / GitHub / Reddit / YouTube → normalization → classification → deduplication → editorial gate → OpenAI → personal Telegram`
 
 The project never publishes anything to a channel. Telegram accepts only a positive
 numeric `chat_id`, meaning a personal chat; negative group and channel IDs are rejected.
@@ -13,8 +13,8 @@ numeric `chat_id`, meaning a personal chat; negative group and channel IDs are r
 Every milestone ends with a runnable system, tests, a migration, and documentation.
 
 1. **M1 — RSS vertical slice (complete).** A fixed JSON RSS catalog, a shared model,
-   conservative deduplication, keyword categories, an explainable score, up to TOP-10
-   OpenAI requests, and Telegram/dry-run delivery.
+   conservative deduplication, keyword categories, an explainable score, deterministic
+   audience-interest selection, optional OpenAI enrichment, and Telegram/dry-run delivery.
 2. **M2 — Hacker News and arXiv (complete).** Two free collectors use the same model;
    the entire downstream pipeline remains unchanged.
 3. **M3 — GitHub, Reddit, and YouTube (complete).** API collectors and metric snapshots
@@ -42,7 +42,8 @@ The main data contract is:
 - `services/` — one application workflow;
 - `cli/` — one-off runs, scheduler, configuration checks, and status.
 
-OpenAI receives only the already-ranked TOP-N (`10` by default). Each successful result
+OpenAI receives only the small set that passed deterministic editorial and source gates
+(`5` cards maximum per digest by default). Each successful result
 is stored immediately before the next material is requested. Provider failures use a
 bounded per-material retry state; malformed Telegram cards are quarantined rather than
 blocking other cards. Enriched but undelivered cards form a separate FIFO retry queue
@@ -86,8 +87,12 @@ docker compose up -d
 docker compose logs -f app
 ```
 
-The default interval is 180 minutes. All nonessential numbers, including TOP-N,
-deduplication threshold, concurrency, and score weights, are defined in `.env.example`.
+Collection runs every 180 minutes by default. Regular Telegram delivery has its own three
+daily windows (`09:00,15:00,21:00` in `Europe/Moscow`) and sends at most five worthy cards
+per window. These are ceilings, not quotas: a digest can contain one card or none. An
+exceptional urgent item can be delivered on a collection tick. Both clocks start in the
+future after process startup, so a Docker restart does not itself emit a digest. All
+thresholds and schedule values are defined in `.env.example`.
 
 ## Source catalog
 
@@ -98,15 +103,33 @@ disables it in the database while preserving its history.
 RSS/Atom uses ETag/Last-Modified. Hacker News uses the official Firebase API; it
 collects `top` by default (`new` or `best` can be selected in configuration) and 30
 stories with points/comments. arXiv uses the public Atom API and reads `cs.AI`, `cs.LG`,
-`cs.CL`, `cs.CV`, `cs.RO`, and `eess.SY` by default. Failure of one source does not stop
+`cs.CL`, `cs.CV`, `cs.RO`, and `eess.SY` by default. It remains a discovery sensor, but
+delivery requires a clear public-facing implication. Failure of one source does not stop
 the others.
 
 GitHub searches configured queries for new repositories and stores stars, forks,
-language, topics, and the latest release. Reddit collects approved subreddits with
+language, topics, and the latest release. Small repositories remain in the database, but
+delivery additionally requires adoption, velocity, independent mentions, a known-team
+release, or an exceptional idea. Reddit collects approved subreddits with
 score/comments and post text; the catalog assigns a lower weight to `r/OpenAI`,
 `r/ControlProblem`, `r/technology`, and `r/ChatGPT`. YouTube uses the Data API for
 configured channels and search queries. It is enabled only after setting
 `F117_YOUTUBE_API_KEY` and changing the source in `config/feeds.json` to `enabled: true`.
+
+Cyberculture is covered by the official feeds for `WIRED Culture`, The Verge
+Entertainment/Culture, 404 Media, Polygon, and Futurism. They enter through the existing
+RSS adapter with no blanket source boost: ordinary entertainment is rejected while
+AI/cyberpunk/robots/hacking/transhumanism and technologically significant internet culture
+can qualify as `CYBERCULTURE`.
+
+Reddit uses the existing API-or-RSS collector. The cultural sensors are
+`r/Cyberpunk`, `r/scifi`, `r/transhumanism`, `r/InternetIsBeautiful`, `r/LV426`, and
+`r/bladerunner`; each public RSS source is merged across `new`, `hot`, and `rising` by
+post ID. RSS requests share a small global spacing/jitter policy, honor `Retry-After`,
+and use bounded exponential backoff for HTTP 429. A failed listing is logged and does
+not abort the collection cycle. `r/LV426` and `r/bladerunner` are cultural sensors:
+fan art, cosplay, merchandise, lore questions, nostalgia, and generic fandom chatter
+are rejected even when the franchise is relevant.
 
 ## Metric history
 
@@ -136,9 +159,10 @@ Early materials with strong growth and moderate absolute popularity enter “Hid
 findings”. Telegram shows only confirmed growth signals or independent mentions;
 formulas and discovery score are available only in debug mode.
 
-When Reddit OAuth credentials are absent, all Reddit sources are skipped normally with
-an informational log. This is not a run error and does not block RSS, HN, arXiv, GitHub,
-or YouTube.
+When Reddit OAuth credentials are absent, Reddit falls back to the public RSS pipeline
+(`new`, `hot`, `rising`) with the same semantic event gate. This is not a run error and
+does not block RSS, HN, arXiv, GitHub, or YouTube. OAuth remains the preferred path when
+credentials are configured.
 
 ## Telegram
 
@@ -181,9 +205,17 @@ Deduplication first checks source/external ID and canonical URL, then exact norm
 content/title. Fuzzy merging requires at least six words, `0.92` similarity, and a
 three-day window. When in doubt, publications remain separate.
 
-The explainable `0..100` score includes freshness, reputation, independent mentions,
-popularity, growth velocity, novelty, topic affinity, and unusualness. RSS metrics are
-usually sparse; full popularity/growth data comes from the M3 API collectors.
+The original explainable `0..100` importance score still includes freshness, reputation,
+independent mentions, popularity, growth velocity, novelty, topic affinity, and
+unusualness. A separate deterministic `editorial_fit` asks whether id:28's audience would
+open the story. Delivery uses a weighted score (65% editorial fit by default), plus hard
+minimums for editorial fit and the combined delivery score. Enterprise minutiae,
+specialist-only papers, weak GitHub projects, and generic entertainment cannot buy a slot
+with technical relevance or popularity alone. Entity names such as OpenAI, Anthropic,
+Google DeepMind, xAI, Meta, and NVIDIA are supporting signals, not proof of a major event:
+courses, policy/evaluation posts, system-card addenda, benchmark methodology, and generic
+documentation do not receive major-event treatment automatically. RSS metrics are usually
+sparse; full popularity/growth data comes from the M3 API collectors.
 
 ## Local verification
 
